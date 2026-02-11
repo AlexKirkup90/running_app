@@ -5,7 +5,7 @@ from datetime import date
 from sqlalchemy import select
 
 from core.db import session_scope
-from core.models import Athlete, User
+from core.models import Athlete, SessionLibrary, User
 from core.security import hash_password
 
 
@@ -17,7 +17,8 @@ def ensure_demo_seeded() -> bool:
     try:
         with session_scope() as s:
             coach = s.execute(select(User.id).where(User.username == "coach")).scalar_one_or_none()
-            if coach:
+            has_sessions = s.execute(select(SessionLibrary.id)).first() is not None
+            if coach and has_sessions:
                 _reconcile_demo_credentials()
                 return False
     except Exception:

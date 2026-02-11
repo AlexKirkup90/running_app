@@ -9,10 +9,11 @@ from sqlalchemy import select
 
 from core.bootstrap import ensure_demo_seeded
 from core.db import session_scope
-from core.models import Athlete, CheckIn, CoachIntervention, Event, TrainingLog, User
+from core.models import Athlete, AthletePreference, CheckIn, CoachIntervention, Event, ImportRun, Plan, PlanWeek, SessionLibrary, TrainingLog, User
 from core.observability import system_status
 from core.security import account_locked, hash_password, verify_password
 from core.services.analytics import weekly_summary
+from core.services.planning import generate_plan_weeks
 from core.services.readiness import readiness_band, readiness_score
 
 st.set_page_config(page_title="Run Season Command", layout="wide")
@@ -141,6 +142,192 @@ def coach_clients():
     st.dataframe(pd.DataFrame(data), use_container_width=True)
 
 
+def coach_command_center():
+    st.header("Command Center")
+    with session_scope() as s:
+        rows = s.execute(
+            select(
+                CoachIntervention.id,
+                CoachIntervention.athlete_id,
+                CoachIntervention.action_type,
+                CoachIntervention.status,
+                CoachIntervention.risk_score,
+                CoachIntervention.confidence_score,
+                CoachIntervention.guardrail_reason,
+            ).where(CoachIntervention.status == "open")
+        ).all()
+    if not rows:
+        st.success("No open interventions.")
+        return
+    df = pd.DataFrame(
+        [
+            {
+                "id": iid,
+                "athlete_id": athlete_id,
+                "action": action,
+                "status": status,
+                "risk": risk,
+                "confidence": confidence,
+                "guardrail_reason": guardrail_reason,
+            }
+            for iid, athlete_id, action, status, risk, confidence, guardrail_reason in rows
+        ]
+    )
+    st.dataframe(df, use_container_width=True)
+
+    with st.form("resolve_intervention"):
+        intervention_id = st.number_input("Intervention ID to close", min_value=1, value=int(df.iloc[0]["id"]))
+        submit = st.form_submit_button("Mark Closed")
+    if submit:
+        with session_scope() as s:
+            rec = s.get(CoachIntervention, int(intervention_id))
+            if rec is None:
+                st.error("Intervention not found.")
+            else:
+                rec.status = "closed"
+                st.success(f"Intervention {intervention_id} closed.")
+                st.rerun()
+
+
+def coach_plan_builder():
+    st.header("Plan Builder")
+    with session_scope() as s:
+        athletes = s.execute(select(Athlete.id, Athlete.first_name, Athlete.last_name)).all()
+    if not athletes:
+        st.warning("No athletes available yet. Add a client first.")
+        return
+    athlete_options = {f"{first} {last} (#{athlete_id})": athlete_id for athlete_id, first, last in athletes}
+    with st.form("plan_builder"):
+        athlete_label = st.selectbox("Athlete", list(athlete_options.keys()))
+        race_goal = st.selectbox("Race Goal", ["5K", "10K", "Half Marathon", "Marathon"])
+        weeks = st.selectbox("Plan Length (weeks)", [12, 24, 36, 48], index=1)
+        sessions_per_week = st.slider("Sessions / week", min_value=3, max_value=6, value=4)
+        max_session_min = st.slider("Max session minutes", min_value=60, max_value=240, value=140)
+        start_date = st.date_input("Start date", value=date.today())
+        submit = st.form_submit_button("Generate Plan")
+    if submit:
+        athlete_id = athlete_options[athlete_label]
+        rows = generate_plan_weeks(start_date, weeks, race_goal, sessions_per_week, max_session_min)
+        with session_scope() as s:
+            plan = Plan(
+                athlete_id=athlete_id,
+                race_goal=race_goal,
+                weeks=weeks,
+                sessions_per_week=sessions_per_week,
+                max_session_min=max_session_min,
+                start_date=start_date,
+                status="active",
+            )
+            s.add(plan)
+            s.flush()
+            s.add_all([PlanWeek(plan_id=plan.id, **row) for row in rows])
+        st.success("Plan generated.")
+        st.rerun()
+
+    with session_scope() as s:
+        plan_rows = s.execute(
+            select(Plan.id, Plan.athlete_id, Plan.race_goal, Plan.weeks, Plan.start_date, Plan.status).order_by(Plan.id.desc())
+        ).all()
+    if plan_rows:
+        st.subheader("Recent Plans")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {"id": pid, "athlete_id": athlete_id, "goal": goal, "weeks": weeks, "start_date": start_dt, "status": status}
+                    for pid, athlete_id, goal, weeks, start_dt, status in plan_rows[:20]
+                ]
+            ),
+            use_container_width=True,
+        )
+
+
+def coach_session_library():
+    st.header("Session Library")
+    with session_scope() as s:
+        rows = s.execute(
+            select(
+                SessionLibrary.id,
+                SessionLibrary.name,
+                SessionLibrary.category,
+                SessionLibrary.tier,
+                SessionLibrary.is_treadmill,
+                SessionLibrary.duration_min,
+            )
+        ).all()
+    if not rows:
+        st.error("Session library is empty. Run seed to populate templates.")
+        return
+    df = pd.DataFrame(
+        [
+            {
+                "id": sid,
+                "name": name,
+                "category": category,
+                "tier": tier,
+                "treadmill": treadmill,
+                "duration_min": duration_min,
+            }
+            for sid, name, category, tier, treadmill, duration_min in rows
+        ]
+    )
+    categories = sorted(df["category"].unique().tolist())
+    selected_categories = st.multiselect("Category", categories, default=categories)
+    treadmill_only = st.checkbox("Treadmill only", value=False)
+    min_dur, max_dur = int(df["duration_min"].min()), int(df["duration_min"].max())
+    duration_range = st.slider("Duration range (min)", min_value=min_dur, max_value=max_dur, value=(min_dur, max_dur))
+
+    filtered = df[df["category"].isin(selected_categories)]
+    if treadmill_only:
+        filtered = filtered[filtered["treadmill"]]
+    filtered = filtered[(filtered["duration_min"] >= duration_range[0]) & (filtered["duration_min"] <= duration_range[1])]
+    st.caption(f"{len(filtered)} sessions")
+    st.dataframe(filtered.sort_values(["category", "duration_min", "name"]), use_container_width=True)
+
+
+def coach_portfolio_analytics():
+    st.header("Portfolio Analytics")
+    with session_scope() as s:
+        rows = s.execute(select(TrainingLog.athlete_id, TrainingLog.date, TrainingLog.duration_min, TrainingLog.load_score)).all()
+    if not rows:
+        st.info("No training logs available yet.")
+        return
+    df = pd.DataFrame([{"athlete_id": athlete_id, "date": d, "duration_min": mins, "load_score": load} for athlete_id, d, mins, load in rows])
+    summary = df.groupby("athlete_id", as_index=False).agg(total_sessions=("athlete_id", "count"), total_minutes=("duration_min", "sum"), total_load=("load_score", "sum"))
+    st.dataframe(summary.sort_values("total_load", ascending=False), use_container_width=True)
+
+
+def coach_integrations():
+    st.header("Integrations")
+    with session_scope() as s:
+        runs = s.execute(select(ImportRun.id, ImportRun.adapter_name, ImportRun.status, ImportRun.created_at).order_by(ImportRun.id.desc())).all()
+    if not runs:
+        st.info("No import runs yet.")
+        return
+    st.dataframe(
+        pd.DataFrame([{"id": rid, "adapter": adapter, "status": status, "created_at": created_at} for rid, adapter, status, created_at in runs]),
+        use_container_width=True,
+    )
+
+
+def coach_admin_tools():
+    st.header("Admin Tools")
+    if st.button("Run Demo Bootstrap", type="primary"):
+        try:
+            ensure_demo_seeded()
+            st.success("Bootstrap completed.")
+        except Exception as e:
+            st.error(f"Bootstrap failed: {e}")
+    with session_scope() as s:
+        counts = {
+            "athletes": len(s.execute(select(Athlete.id)).all()),
+            "users": len(s.execute(select(User.id)).all()),
+            "sessions_library": len(s.execute(select(SessionLibrary.id)).all()),
+            "plans": len(s.execute(select(Plan.id)).all()),
+            "training_logs": len(s.execute(select(TrainingLog.id)).all()),
+        }
+    st.json(counts)
+
+
 def add_client():
     st.header("Add Client")
     with st.form("add_client"):
@@ -234,6 +421,53 @@ def athlete_analytics(athlete_id: int):
         st.write("Next event in days:", min((event_date - date.today()).days for (event_date,) in events))
 
 
+def athlete_events(athlete_id: int):
+    st.header("Events")
+    with session_scope() as s:
+        rows = s.execute(select(Event.id, Event.name, Event.event_date, Event.distance).where(Event.athlete_id == athlete_id)).all()
+    st.subheader("Upcoming")
+    if rows:
+        st.dataframe(pd.DataFrame([{"id": event_id, "name": name, "event_date": event_date, "distance": distance} for event_id, name, event_date, distance in rows]), use_container_width=True)
+    else:
+        st.info("No events added.")
+
+    with st.form("add_event"):
+        name = st.text_input("Event name")
+        event_date = st.date_input("Event date", value=date.today())
+        distance = st.selectbox("Distance", ["5K", "10K", "Half Marathon", "Marathon", "Other"])
+        submit = st.form_submit_button("Add Event")
+    if submit and name.strip():
+        with session_scope() as s:
+            s.add(Event(athlete_id=athlete_id, name=name.strip(), event_date=event_date, distance=distance))
+        st.success("Event added.")
+        st.rerun()
+
+
+def athlete_profile(athlete_id: int):
+    st.header("Profile")
+    with session_scope() as s:
+        athlete = s.execute(select(Athlete.first_name, Athlete.last_name, Athlete.email, Athlete.dob, Athlete.status).where(Athlete.id == athlete_id)).first()
+        prefs = s.execute(
+            select(AthletePreference.automation_mode, AthletePreference.auto_apply_low_risk, AthletePreference.reminder_training_days).where(
+                AthletePreference.athlete_id == athlete_id
+            )
+        ).first()
+    if athlete:
+        first, last, email, dob, status = athlete
+        st.write(f"Name: {first} {last}")
+        st.write(f"Email: {email}")
+        st.write(f"DOB: {dob}")
+        st.write(f"Status: {status}")
+    else:
+        st.warning("Athlete profile not found.")
+    if prefs:
+        mode, low_risk, days = prefs
+        st.subheader("Preferences")
+        st.write(f"Automation mode: {mode}")
+        st.write(f"Auto-apply low risk: {low_risk}")
+        st.write(f"Reminder days: {', '.join(days)}")
+
+
 def main():
     # Ensure demo accounts exist in first-run Streamlit deployments.
     try:
@@ -256,12 +490,24 @@ def main():
     try:
         if role == "coach":
             page = st.sidebar.radio("Coach", ["Dashboard", "Command Center", "Clients", "Add Client", "Plan Builder", "Session Library", "Portfolio Analytics", "Integrations", "Admin Tools"])
-            if page in {"Dashboard", "Command Center", "Plan Builder", "Session Library", "Portfolio Analytics", "Integrations", "Admin Tools"}:
+            if page == "Dashboard":
                 coach_dashboard()
+            elif page == "Command Center":
+                coach_command_center()
             elif page == "Clients":
                 coach_clients()
             elif page == "Add Client":
                 add_client()
+            elif page == "Plan Builder":
+                coach_plan_builder()
+            elif page == "Session Library":
+                coach_session_library()
+            elif page == "Portfolio Analytics":
+                coach_portfolio_analytics()
+            elif page == "Integrations":
+                coach_integrations()
+            elif page == "Admin Tools":
+                coach_admin_tools()
         else:
             page = st.sidebar.radio("Athlete", ["Dashboard", "Log Session", "Check-In", "Events", "Analytics", "Profile"])
             athlete_id = st.session_state.athlete_id
@@ -271,10 +517,12 @@ def main():
                 athlete_log(athlete_id)
             elif page == "Check-In":
                 athlete_checkin(athlete_id)
-            elif page in {"Events", "Profile"}:
-                st.info("Use coach-managed profile/events in this demo")
+            elif page == "Events":
+                athlete_events(athlete_id)
             elif page == "Analytics":
                 athlete_analytics(athlete_id)
+            elif page == "Profile":
+                athlete_profile(athlete_id)
     except Exception as e:
         log_runtime_error("main", e)
         st.error("Something went wrong. The issue has been logged.")
