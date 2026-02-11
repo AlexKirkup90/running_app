@@ -7,7 +7,14 @@ from datetime import datetime, timedelta, timezone
 try:
     from passlib.context import CryptContext
 
-    pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+    _ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
+    # On some runtimes (e.g., newer Python/bcrypt combos), bcrypt backend
+    # introspection fails inside passlib. Probe once and fall back to sha256.
+    try:
+        _ctx.hash("InitPass!123")
+        pwd_context = _ctx
+    except Exception:
+        pwd_context = None
 except Exception:  # pragma: no cover
     pwd_context = None
 
