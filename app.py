@@ -7,6 +7,7 @@ import pandas as pd
 import streamlit as st
 from sqlalchemy import select
 
+from core.bootstrap import ensure_demo_seeded
 from core.db import session_scope
 from core.models import Athlete, CheckIn, CoachIntervention, Event, TrainingLog, User
 from core.observability import system_status
@@ -36,11 +37,32 @@ def auth_panel():
         submitted = st.form_submit_button("Login")
     if submitted:
         try:
+            username = u.strip().lower()
+            if username == "athlete":
+                username = "athlete1"
+
+            def _get_user():
+                with session_scope() as s:
+                    return s.execute(select(User).where(User.username == username)).scalar_one_or_none()
+
+            try:
+                user = _get_user()
+            except Exception:
+                user = None
+
+            if not user:
+                try:
+                    ensure_demo_seeded()
+                    user = _get_user()
+                except Exception:
+                    user = None
+
+            if not user:
+                st.error("Invalid credentials")
+                return
+
             with session_scope() as s:
-                user = s.execute(select(User).where(User.username == u)).scalar_one_or_none()
-                if not user:
-                    st.error("Invalid credentials")
-                    return
+                user = s.get(User, user.id)
                 if account_locked(user.locked_until):
                     st.error("Account locked")
                     return
@@ -208,6 +230,12 @@ def athlete_analytics(athlete_id: int):
 
 
 def main():
+    # Ensure demo accounts exist in first-run Streamlit deployments.
+    try:
+        ensure_demo_seeded()
+    except Exception:
+        pass
+
     status = system_status(samples=3, slow_queries=0)
     st.caption(f"System Status: {status.status} - {status.message}")
 

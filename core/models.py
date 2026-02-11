@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from typing import Optional
 
 from sqlalchemy import (
     JSON,
@@ -27,7 +28,7 @@ class Athlete(Base):
     first_name: Mapped[str] = mapped_column(String(100), nullable=False)
     last_name: Mapped[str] = mapped_column(String(100), nullable=False)
     email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
-    dob: Mapped[date | None] = mapped_column(Date)
+    dob: Mapped[Optional[date]] = mapped_column(Date)
     status: Mapped[str] = mapped_column(String(20), default="active", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
@@ -38,11 +39,11 @@ class User(Base):
     username: Mapped[str] = mapped_column(String(120), unique=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
-    athlete_id: Mapped[int | None] = mapped_column(ForeignKey("athletes.id"))
+    athlete_id: Mapped[Optional[int]] = mapped_column(ForeignKey("athletes.id"))
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=True)
     failed_attempts: Mapped[int] = mapped_column(Integer, default=0)
-    locked_until: Mapped[datetime | None] = mapped_column(DateTime)
-    last_login_at: Mapped[datetime | None] = mapped_column(DateTime)
+    locked_until: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     athlete = relationship("Athlete")
 
 
@@ -164,7 +165,7 @@ class CoachNotesTask(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     athlete_id: Mapped[int] = mapped_column(ForeignKey("athletes.id"), index=True)
     note: Mapped[str] = mapped_column(Text, nullable=False)
-    due_date: Mapped[date | None] = mapped_column(Date)
+    due_date: Mapped[Optional[date]] = mapped_column(Date)
     completed: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
@@ -180,7 +181,7 @@ class CoachIntervention(Base):
     why_factors: Mapped[list] = mapped_column(JSON, default=list)
     guardrail_pass: Mapped[bool] = mapped_column(Boolean, default=True)
     guardrail_reason: Mapped[str] = mapped_column(String(255), default="ok")
-    cooldown_until: Mapped[datetime | None] = mapped_column(DateTime)
+    cooldown_until: Mapped[Optional[datetime]] = mapped_column(DateTime)
 
 
 class AthletePreference(Base):
@@ -200,7 +201,7 @@ class AppWriteLog(Base):
     __tablename__ = "app_write_logs"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     scope: Mapped[str] = mapped_column(String(80))
-    actor_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    actor_user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
@@ -226,7 +227,7 @@ class ImportItem(Base):
     __tablename__ = "import_items"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     import_run_id: Mapped[int] = mapped_column(ForeignKey("import_runs.id"), index=True)
-    athlete_id: Mapped[int | None] = mapped_column(ForeignKey("athletes.id"))
+    athlete_id: Mapped[Optional[int]] = mapped_column(ForeignKey("athletes.id"))
     raw_payload: Mapped[dict] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String(20), default="pending")
     message: Mapped[str] = mapped_column(String(255), default="")
