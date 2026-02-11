@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timedelta
 
 import altair as alt
@@ -15,6 +16,13 @@ from core.security import account_locked, hash_password, verify_password
 from core.services.analytics import weekly_summary
 from core.services.planning import generate_plan_weeks
 from core.services.readiness import readiness_band, readiness_score
+from core.services.session_library import (
+    default_progression,
+    default_regression,
+    default_structure,
+    default_targets,
+    validate_session_payload,
+)
 from core.services.session_engine import (
     adapt_session_structure,
     compute_acute_chronic_ratio,
@@ -280,38 +288,247 @@ def coach_session_library():
                 SessionLibrary.tier,
                 SessionLibrary.is_treadmill,
                 SessionLibrary.duration_min,
+                SessionLibrary.structure_json,
+                SessionLibrary.targets_json,
+                SessionLibrary.progression_json,
+                SessionLibrary.regression_json,
+                SessionLibrary.prescription,
+                SessionLibrary.coaching_notes,
             )
         ).all()
     if not rows:
-        st.error("Session library is empty. Run seed to populate templates.")
-        return
-    df = pd.DataFrame(
-        [
-            {
-                "id": sid,
+        st.warning("Session library is empty. Add your first template below.")
+
+    full_rows = [
+        {
+            "id": sid,
+            "name": name,
+            "category": category,
+            "intent": intent,
+            "energy_system": energy_system,
+            "tier": tier,
+            "treadmill": treadmill,
+            "duration_min": duration_min,
+            "structure_json": structure_json,
+            "targets_json": targets_json,
+            "progression_json": progression_json,
+            "regression_json": regression_json,
+            "prescription": prescription,
+            "coaching_notes": coaching_notes,
+        }
+        for (
+            sid,
+            name,
+            category,
+            intent,
+            energy_system,
+            tier,
+            treadmill,
+            duration_min,
+            structure_json,
+            targets_json,
+            progression_json,
+            regression_json,
+            prescription,
+            coaching_notes,
+        ) in rows
+    ]
+    df = pd.DataFrame(full_rows)
+
+    def _json_or_none(raw: str, label: str, errors: list[str]):
+        try:
+            return json.loads(raw)
+        except Exception as exc:
+            errors.append(f"{label} is not valid JSON: {exc}")
+            return None
+
+    browse_tab, add_tab, edit_tab, delete_tab = st.tabs(["Browse", "Add", "Edit", "Delete"])
+
+    with browse_tab:
+        if df.empty:
+            st.info("No templates yet.")
+        else:
+            categories = sorted(df["category"].unique().tolist())
+            intents = sorted(df["intent"].unique().tolist())
+            selected_categories = st.multiselect("Category", categories, default=categories)
+            selected_intents = st.multiselect("Intent", intents, default=intents)
+            treadmill_only = st.checkbox("Treadmill only", value=False)
+            min_dur, max_dur = int(df["duration_min"].min()), int(df["duration_min"].max())
+            duration_range = st.slider("Duration range (min)", min_value=min_dur, max_value=max_dur, value=(min_dur, max_dur))
+
+            filtered = df[df["category"].isin(selected_categories) & df["intent"].isin(selected_intents)]
+            if treadmill_only:
+                filtered = filtered[filtered["treadmill"]]
+            filtered = filtered[(filtered["duration_min"] >= duration_range[0]) & (filtered["duration_min"] <= duration_range[1])]
+            st.caption(f"{len(filtered)} sessions")
+            st.dataframe(filtered[["id", "name", "category", "intent", "energy_system", "tier", "treadmill", "duration_min"]].sort_values(["category", "duration_min", "name"]), use_container_width=True)
+
+    with add_tab:
+        st.subheader("Add Session Template")
+        with st.form("session_add"):
+            name = st.text_input("Name")
+            category = st.text_input("Category", value="Easy Run")
+            intent = st.text_input("Intent", value="easy_aerobic")
+            energy_system = st.text_input("Energy System", value="aerobic_base")
+            tier = st.selectbox("Tier", ["short", "medium", "long"], index=1)
+            is_treadmill = st.checkbox("Treadmill Session", value=False)
+            duration_min = st.number_input("Duration (min)", min_value=10, value=45)
+            structure_text = st.text_area("Structure JSON", value=json.dumps(default_structure(int(duration_min)), indent=2), height=220)
+            targets_text = st.text_area("Targets JSON", value=json.dumps(default_targets(), indent=2), height=180)
+            progression_text = st.text_area("Progression JSON", value=json.dumps(default_progression(), indent=2), height=120)
+            regression_text = st.text_area("Regression JSON", value=json.dumps(default_regression(), indent=2), height=120)
+            prescription = st.text_area("Prescription", value="Detailed running prescription including warmup, main set, and cooldown.")
+            coaching_notes = st.text_area("Coaching Notes", value="Adapt using readiness, pain flags, and recent load.")
+            submit_add = st.form_submit_button("Create Template")
+
+        if submit_add:
+            parse_errors: list[str] = []
+            structure_json = _json_or_none(structure_text, "Structure JSON", parse_errors)
+            targets_json = _json_or_none(targets_text, "Targets JSON", parse_errors)
+            progression_json = _json_or_none(progression_text, "Progression JSON", parse_errors)
+            regression_json = _json_or_none(regression_text, "Regression JSON", parse_errors)
+            payload = {
                 "name": name,
                 "category": category,
                 "intent": intent,
                 "energy_system": energy_system,
                 "tier": tier,
-                "treadmill": treadmill,
-                "duration_min": duration_min,
+                "is_treadmill": is_treadmill,
+                "duration_min": int(duration_min),
+                "structure_json": structure_json,
+                "targets_json": targets_json,
+                "progression_json": progression_json,
+                "regression_json": regression_json,
+                "prescription": prescription,
+                "coaching_notes": coaching_notes,
             }
-            for sid, name, category, intent, energy_system, tier, treadmill, duration_min in rows
-        ]
-    )
-    categories = sorted(df["category"].unique().tolist())
-    selected_categories = st.multiselect("Category", categories, default=categories)
-    treadmill_only = st.checkbox("Treadmill only", value=False)
-    min_dur, max_dur = int(df["duration_min"].min()), int(df["duration_min"].max())
-    duration_range = st.slider("Duration range (min)", min_value=min_dur, max_value=max_dur, value=(min_dur, max_dur))
+            errors = parse_errors + validate_session_payload(payload)
+            if errors:
+                for err in errors:
+                    st.error(err)
+            else:
+                with session_scope() as s:
+                    dup = s.execute(select(SessionLibrary.id).where(SessionLibrary.name == name.strip())).scalar_one_or_none()
+                    if dup:
+                        st.error("A session with this name already exists.")
+                    else:
+                        s.add(
+                            SessionLibrary(
+                                name=name.strip(),
+                                category=category.strip(),
+                                intent=intent.strip(),
+                                energy_system=energy_system.strip(),
+                                tier=tier,
+                                is_treadmill=is_treadmill,
+                                duration_min=int(duration_min),
+                                structure_json=structure_json,
+                                targets_json=targets_json,
+                                progression_json=progression_json,
+                                regression_json=regression_json,
+                                prescription=prescription.strip(),
+                                coaching_notes=coaching_notes.strip(),
+                            )
+                        )
+                        st.success("Session template created.")
+                        st.rerun()
 
-    filtered = df[df["category"].isin(selected_categories)]
-    if treadmill_only:
-        filtered = filtered[filtered["treadmill"]]
-    filtered = filtered[(filtered["duration_min"] >= duration_range[0]) & (filtered["duration_min"] <= duration_range[1])]
-    st.caption(f"{len(filtered)} sessions")
-    st.dataframe(filtered.sort_values(["category", "duration_min", "name"]), use_container_width=True)
+    with edit_tab:
+        st.subheader("Edit Session Template")
+        if df.empty:
+            st.info("No templates available to edit.")
+        else:
+            options = {f"{row['name']} (#{int(row['id'])})": int(row["id"]) for _, row in df.iterrows()}
+            selected_label = st.selectbox("Select template", list(options.keys()))
+            selected_id = options[selected_label]
+            current = next(row for row in full_rows if row["id"] == selected_id)
+            with st.form("session_edit"):
+                name = st.text_input("Name", value=current["name"])
+                category = st.text_input("Category", value=current["category"])
+                intent = st.text_input("Intent", value=current["intent"])
+                energy_system = st.text_input("Energy System", value=current["energy_system"])
+                tier = st.selectbox("Tier", ["short", "medium", "long"], index=["short", "medium", "long"].index(current["tier"]) if current["tier"] in {"short", "medium", "long"} else 1)
+                is_treadmill = st.checkbox("Treadmill Session", value=bool(current["treadmill"]))
+                duration_min = st.number_input("Duration (min)", min_value=10, value=int(current["duration_min"]))
+                structure_text = st.text_area("Structure JSON", value=json.dumps(current["structure_json"], indent=2), height=220)
+                targets_text = st.text_area("Targets JSON", value=json.dumps(current["targets_json"], indent=2), height=180)
+                progression_text = st.text_area("Progression JSON", value=json.dumps(current["progression_json"], indent=2), height=120)
+                regression_text = st.text_area("Regression JSON", value=json.dumps(current["regression_json"], indent=2), height=120)
+                prescription = st.text_area("Prescription", value=current["prescription"])
+                coaching_notes = st.text_area("Coaching Notes", value=current["coaching_notes"])
+                submit_edit = st.form_submit_button("Save Changes")
+
+            if submit_edit:
+                parse_errors: list[str] = []
+                structure_json = _json_or_none(structure_text, "Structure JSON", parse_errors)
+                targets_json = _json_or_none(targets_text, "Targets JSON", parse_errors)
+                progression_json = _json_or_none(progression_text, "Progression JSON", parse_errors)
+                regression_json = _json_or_none(regression_text, "Regression JSON", parse_errors)
+                payload = {
+                    "name": name,
+                    "category": category,
+                    "intent": intent,
+                    "energy_system": energy_system,
+                    "tier": tier,
+                    "is_treadmill": is_treadmill,
+                    "duration_min": int(duration_min),
+                    "structure_json": structure_json,
+                    "targets_json": targets_json,
+                    "progression_json": progression_json,
+                    "regression_json": regression_json,
+                    "prescription": prescription,
+                    "coaching_notes": coaching_notes,
+                }
+                errors = parse_errors + validate_session_payload(payload)
+                if errors:
+                    for err in errors:
+                        st.error(err)
+                else:
+                    with session_scope() as s:
+                        dup = s.execute(select(SessionLibrary.id).where(SessionLibrary.name == name.strip(), SessionLibrary.id != selected_id)).scalar_one_or_none()
+                        if dup:
+                            st.error("Another session with this name already exists.")
+                        else:
+                            session_obj = s.get(SessionLibrary, selected_id)
+                            if session_obj is None:
+                                st.error("Session not found.")
+                            else:
+                                session_obj.name = name.strip()
+                                session_obj.category = category.strip()
+                                session_obj.intent = intent.strip()
+                                session_obj.energy_system = energy_system.strip()
+                                session_obj.tier = tier
+                                session_obj.is_treadmill = is_treadmill
+                                session_obj.duration_min = int(duration_min)
+                                session_obj.structure_json = structure_json
+                                session_obj.targets_json = targets_json
+                                session_obj.progression_json = progression_json
+                                session_obj.regression_json = regression_json
+                                session_obj.prescription = prescription.strip()
+                                session_obj.coaching_notes = coaching_notes.strip()
+                                st.success("Session template updated.")
+                                st.rerun()
+
+    with delete_tab:
+        st.subheader("Delete Session Template")
+        if df.empty:
+            st.info("No templates available to delete.")
+        else:
+            options = {f"{row['name']} (#{int(row['id'])})": int(row["id"]) for _, row in df.iterrows()}
+            selected_label = st.selectbox("Select template to delete", list(options.keys()), key="delete_session_select")
+            selected_id = options[selected_label]
+            confirm = st.checkbox("I understand this will permanently delete the template.", key="delete_session_confirm")
+            if st.button("Delete Template", type="secondary"):
+                if not confirm:
+                    st.error("Please confirm deletion.")
+                else:
+                    with session_scope() as s:
+                        session_obj = s.get(SessionLibrary, selected_id)
+                        if session_obj is None:
+                            st.error("Session not found.")
+                        else:
+                            s.delete(session_obj)
+                            st.success("Session template deleted.")
+                            st.rerun()
 
 
 def coach_portfolio_analytics():
