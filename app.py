@@ -15,7 +15,13 @@ from core.security import account_locked, hash_password, verify_password
 from core.services.analytics import weekly_summary
 from core.services.planning import generate_plan_weeks
 from core.services.readiness import readiness_band, readiness_score
-from core.services.session_engine import adapt_session_structure, compute_acute_chronic_ratio, pace_from_sec_per_km
+from core.services.session_engine import (
+    adapt_session_structure,
+    compute_acute_chronic_ratio,
+    hr_range_for_label,
+    pace_from_sec_per_km,
+    pace_range_for_label,
+)
 
 st.set_page_config(page_title="Run Season Command", layout="wide")
 
@@ -444,12 +450,16 @@ def athlete_dashboard(athlete_id: int):
             rows = []
             for block in blocks:
                 tgt = block.get("target", {})
+                pace_label = tgt.get("pace_zone")
+                hr_label = tgt.get("hr_zone")
                 rows.append(
                     {
                         "phase": block.get("phase"),
                         "duration_min": block.get("duration_min"),
-                        "pace_zone": tgt.get("pace_zone"),
-                        "hr_zone": tgt.get("hr_zone"),
+                        "pace_zone": pace_label,
+                        "pace_target": pace_range_for_label(pace_label or "", threshold_pace, easy_pace),
+                        "hr_zone": hr_label,
+                        "hr_target": hr_range_for_label(hr_label or "", max_hr, resting_hr),
                         "rpe_range": tgt.get("rpe_range"),
                         "instructions": block.get("instructions"),
                     }

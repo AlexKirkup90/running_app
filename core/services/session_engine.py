@@ -26,6 +26,60 @@ def pace_from_sec_per_km(sec: int | None) -> str:
     return f"{mins}:{rem:02d}/km"
 
 
+def _zones_from_label(label: str) -> list[str]:
+    return [zone for zone in ZONE_ORDER if zone in (label or "")]
+
+
+def _pace_sec_for_zone(zone: str, threshold_pace_sec_per_km: int | None, easy_pace_sec_per_km: int | None) -> int | None:
+    if threshold_pace_sec_per_km is None or easy_pace_sec_per_km is None:
+        return None
+    table = {
+        "Z1": easy_pace_sec_per_km + 30,
+        "Z2": easy_pace_sec_per_km,
+        "Z3": int(round((easy_pace_sec_per_km + threshold_pace_sec_per_km) / 2)),
+        "Z4": threshold_pace_sec_per_km,
+        "Z5": max(150, threshold_pace_sec_per_km - 20),
+    }
+    return table.get(zone)
+
+
+def pace_range_for_label(label: str, threshold_pace_sec_per_km: int | None, easy_pace_sec_per_km: int | None) -> str:
+    zones = _zones_from_label(label)
+    if not zones:
+        return "n/a"
+    secs = [s for s in (_pace_sec_for_zone(z, threshold_pace_sec_per_km, easy_pace_sec_per_km) for z in zones) if s is not None]
+    if not secs:
+        return "n/a"
+    lo, hi = min(secs), max(secs)
+    return pace_from_sec_per_km(lo) if lo == hi else f"{pace_from_sec_per_km(lo)} - {pace_from_sec_per_km(hi)}"
+
+
+def hr_zone_bounds(max_hr: int | None, resting_hr: int | None) -> dict[str, tuple[int, int]]:
+    if not max_hr or not resting_hr or max_hr <= resting_hr:
+        return {}
+    hrr = max_hr - resting_hr
+    return {
+        "Z1": (round(resting_hr + 0.50 * hrr), round(resting_hr + 0.60 * hrr)),
+        "Z2": (round(resting_hr + 0.60 * hrr), round(resting_hr + 0.70 * hrr)),
+        "Z3": (round(resting_hr + 0.70 * hrr), round(resting_hr + 0.80 * hrr)),
+        "Z4": (round(resting_hr + 0.80 * hrr), round(resting_hr + 0.90 * hrr)),
+        "Z5": (round(resting_hr + 0.90 * hrr), round(resting_hr + 1.00 * hrr)),
+    }
+
+
+def hr_range_for_label(label: str, max_hr: int | None, resting_hr: int | None) -> str:
+    zones = _zones_from_label(label)
+    bounds = hr_zone_bounds(max_hr, resting_hr)
+    if not zones or not bounds:
+        return "n/a"
+    vals = [bounds[z] for z in zones if z in bounds]
+    if not vals:
+        return "n/a"
+    lo = min(v[0] for v in vals)
+    hi = max(v[1] for v in vals)
+    return f"{lo}-{hi} bpm"
+
+
 def _shift_zone_label(label: str, delta: int) -> str:
     if not label:
         return label
