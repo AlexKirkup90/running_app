@@ -25,15 +25,21 @@ def hash_password(password: str) -> str:
     if not valid:
         raise ValueError(msg)
     if pwd_context:
-        return pwd_context.hash(password)
+        try:
+            return pwd_context.hash(password)
+        except Exception:
+            pass
     return "sha256$" + hashlib.sha256(password.encode()).hexdigest()
 
 
 def verify_password(password: str, password_hash: str) -> bool:
-    if pwd_context:
-        return pwd_context.verify(password, password_hash)
     if password_hash.startswith("sha256$"):
         return password_hash == "sha256$" + hashlib.sha256(password.encode()).hexdigest()
+    if pwd_context:
+        try:
+            return pwd_context.verify(password, password_hash)
+        except Exception:
+            return False
     return False
 
 

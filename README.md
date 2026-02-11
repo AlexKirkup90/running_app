@@ -71,6 +71,10 @@ alembic downgrade -1
 - **Auth failures**: verify seeded users exist and password policy-compliant resets.
 - **Migration mismatch**: run `alembic history` and `alembic upgrade head`.
 - **Missing table errors**: run migrations before launching Streamlit.
+- **Reset demo login**:
+```bash
+python -m scripts.reset_demo_auth
+```
 
 ## Verification Checklist
 - [x] Coach and athlete role-separated navigation.
