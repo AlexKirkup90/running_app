@@ -249,6 +249,8 @@ def coach_session_library():
                 SessionLibrary.id,
                 SessionLibrary.name,
                 SessionLibrary.category,
+                SessionLibrary.intent,
+                SessionLibrary.energy_system,
                 SessionLibrary.tier,
                 SessionLibrary.is_treadmill,
                 SessionLibrary.duration_min,
@@ -263,11 +265,13 @@ def coach_session_library():
                 "id": sid,
                 "name": name,
                 "category": category,
+                "intent": intent,
+                "energy_system": energy_system,
                 "tier": tier,
                 "treadmill": treadmill,
                 "duration_min": duration_min,
             }
-            for sid, name, category, tier, treadmill, duration_min in rows
+            for sid, name, category, intent, energy_system, tier, treadmill, duration_min in rows
         ]
     )
     categories = sorted(df["category"].unique().tolist())

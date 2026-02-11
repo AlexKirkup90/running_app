@@ -29,6 +29,10 @@ class Athlete(Base):
     last_name: Mapped[str] = mapped_column(String(100), nullable=False)
     email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     dob: Mapped[Optional[date]] = mapped_column(Date)
+    max_hr: Mapped[Optional[int]] = mapped_column(Integer)
+    resting_hr: Mapped[Optional[int]] = mapped_column(Integer)
+    threshold_pace_sec_per_km: Mapped[Optional[int]] = mapped_column(Integer)
+    easy_pace_sec_per_km: Mapped[Optional[int]] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(20), default="active", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
@@ -52,11 +56,17 @@ class SessionLibrary(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     category: Mapped[str] = mapped_column(String(80), index=True)
+    intent: Mapped[str] = mapped_column(String(40), default="general")
+    energy_system: Mapped[str] = mapped_column(String(40), default="aerobic")
     tier: Mapped[str] = mapped_column(String(30), default="medium")
     is_treadmill: Mapped[bool] = mapped_column(Boolean, default=False)
     duration_min: Mapped[int] = mapped_column(Integer)
     structure_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    targets_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    progression_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    regression_json: Mapped[dict] = mapped_column(JSON, default=dict)
     prescription: Mapped[str] = mapped_column(Text, default="")
+    coaching_notes: Mapped[str] = mapped_column(Text, default="")
 
 
 class Plan(Base):
@@ -130,6 +140,9 @@ class TrainingLog(Base):
     session_category: Mapped[str] = mapped_column(String(80))
     duration_min: Mapped[int] = mapped_column(Integer)
     distance_km: Mapped[float] = mapped_column(Float, default=0)
+    avg_hr: Mapped[Optional[int]] = mapped_column(Integer)
+    max_hr: Mapped[Optional[int]] = mapped_column(Integer)
+    avg_pace_sec_per_km: Mapped[Optional[float]] = mapped_column(Float)
     rpe: Mapped[int] = mapped_column(Integer)
     load_score: Mapped[float] = mapped_column(Float, default=0)
     notes: Mapped[str] = mapped_column(Text, default="")
