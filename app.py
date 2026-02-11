@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import altair as alt
 import pandas as pd
@@ -15,6 +15,7 @@ from core.security import account_locked, hash_password, verify_password
 from core.services.analytics import weekly_summary
 from core.services.planning import generate_plan_weeks
 from core.services.readiness import readiness_band, readiness_score
+from core.services.session_engine import adapt_session_structure, compute_acute_chronic_ratio, pace_from_sec_per_km
 
 st.set_page_config(page_title="Run Season Command", layout="wide")
 
@@ -208,6 +209,20 @@ def coach_plan_builder():
     if submit:
         athlete_id = athlete_options[athlete_label]
         rows = generate_plan_weeks(start_date, weeks, race_goal, sessions_per_week, max_session_min)
+
+        def _resolve_session_names(s, week_number: int, tokens: list[str]) -> list[str]:
+            tier = ["short", "medium", "long"][(week_number - 1) % 3]
+            names: list[str] = []
+            for token in tokens:
+                row = s.execute(
+                    select(SessionLibrary.name).where(SessionLibrary.category == token, SessionLibrary.tier == tier).order_by(SessionLibrary.duration_min)
+                ).first()
+                if not row:
+                    row = s.execute(select(SessionLibrary.name).where(SessionLibrary.category == token).order_by(SessionLibrary.duration_min)).first()
+                names.append(row[0] if row else token)
+
+            return names
+
         with session_scope() as s:
             plan = Plan(
                 athlete_id=athlete_id,
@@ -220,7 +235,12 @@ def coach_plan_builder():
             )
             s.add(plan)
             s.flush()
-            s.add_all([PlanWeek(plan_id=plan.id, **row) for row in rows])
+            plan_weeks: list[PlanWeek] = []
+            for row in rows:
+                row_copy = dict(row)
+                row_copy["sessions_order"] = _resolve_session_names(s, row_copy["week_number"], row_copy["sessions_order"])
+                plan_weeks.append(PlanWeek(plan_id=plan.id, **row_copy))
+            s.add_all(plan_weeks)
         st.success("Plan generated.")
         st.rerun()
 
@@ -359,19 +379,85 @@ def add_client():
 def athlete_dashboard(athlete_id: int):
     st.header("Today")
     with session_scope() as s:
-        checkin = s.execute(select(CheckIn.sleep, CheckIn.energy, CheckIn.recovery, CheckIn.stress).where(CheckIn.athlete_id == athlete_id, CheckIn.day == date.today())).first()
+        today = date.today()
+        checkin = s.execute(select(CheckIn.sleep, CheckIn.energy, CheckIn.recovery, CheckIn.stress).where(CheckIn.athlete_id == athlete_id, CheckIn.day == today)).first()
+        athlete_profile = s.execute(
+            select(Athlete.max_hr, Athlete.resting_hr, Athlete.threshold_pace_sec_per_km, Athlete.easy_pace_sec_per_km).where(Athlete.id == athlete_id)
+        ).first()
+        week_row = s.execute(
+            select(PlanWeek.week_number, PlanWeek.sessions_order).join(Plan, Plan.id == PlanWeek.plan_id).where(
+                Plan.athlete_id == athlete_id, Plan.status == "active", PlanWeek.week_start <= today, PlanWeek.week_end >= today
+            )
+        ).first()
+        recent_logs = s.execute(select(TrainingLog.load_score, TrainingLog.pain_flag).where(TrainingLog.athlete_id == athlete_id, TrainingLog.date >= (today - timedelta(days=27)))).all()
+        next_event = s.execute(select(Event.event_date).where(Event.athlete_id == athlete_id, Event.event_date >= today).order_by(Event.event_date)).first()
     st.subheader("1) Check-In")
+    readiness = None
     if checkin:
         sleep, energy, recovery, stress = checkin
-        score = readiness_score(sleep, energy, recovery, stress)
-        st.success(f"Readiness: {score} ({readiness_band(score)})")
+        readiness = readiness_score(sleep, energy, recovery, stress)
+        st.success(f"Readiness: {readiness} ({readiness_band(readiness)})")
     else:
         st.info("Complete your check-in")
 
     st.subheader("2) Session Briefing")
-    st.write("Default: next planned session from current week")
+    loads_28d = [float(load or 0) for load, _ in recent_logs]
+    pain_recent = any(bool(pain) for _, pain in recent_logs[-3:])
+    ratio = compute_acute_chronic_ratio(loads_28d)
+    days_to_event = (next_event[0] - today).days if next_event else None
+    if athlete_profile:
+        max_hr, resting_hr, threshold_pace, easy_pace = athlete_profile
+        st.caption(
+            f"Pace anchors: threshold {pace_from_sec_per_km(threshold_pace)}, easy {pace_from_sec_per_km(easy_pace)} | "
+            f"HR: max {max_hr or 'n/a'}, resting {resting_hr or 'n/a'} | A:C ratio {ratio}"
+        )
+    session_token = None
+    if week_row and week_row[1]:
+        sessions_order = week_row[1]
+        if isinstance(sessions_order, list) and sessions_order:
+            session_token = sessions_order[today.weekday() % len(sessions_order)]
+    if not session_token:
+        st.info("No planned session found for this week.")
+    else:
+        with session_scope() as s:
+            session_template = s.execute(
+                select(SessionLibrary.name, SessionLibrary.structure_json, SessionLibrary.prescription, SessionLibrary.coaching_notes).where(
+                    SessionLibrary.name == session_token
+                )
+            ).first()
+            if not session_template:
+                session_template = s.execute(
+                    select(SessionLibrary.name, SessionLibrary.structure_json, SessionLibrary.prescription, SessionLibrary.coaching_notes).where(
+                        SessionLibrary.category == session_token
+                    ).order_by(SessionLibrary.duration_min)
+                ).first()
+        if not session_template:
+            st.warning(f"No session template found for '{session_token}'.")
+        else:
+            name, structure_json, prescription, coaching_notes = session_template
+            adapted = adapt_session_structure(structure_json, readiness, pain_recent, ratio, days_to_event)
+            st.write(f"**Planned Session:** {name}")
+            st.caption(f"Adaptation: {adapted['action']} | {adapted['reason']}")
+            st.write(prescription)
+            st.write(coaching_notes)
+            blocks = adapted["session"].get("blocks", [])
+            rows = []
+            for block in blocks:
+                tgt = block.get("target", {})
+                rows.append(
+                    {
+                        "phase": block.get("phase"),
+                        "duration_min": block.get("duration_min"),
+                        "pace_zone": tgt.get("pace_zone"),
+                        "hr_zone": tgt.get("hr_zone"),
+                        "rpe_range": tgt.get("rpe_range"),
+                        "instructions": block.get("instructions"),
+                    }
+                )
+            if rows:
+                st.dataframe(pd.DataFrame(rows), use_container_width=True)
     st.subheader("3) Complete Session")
-    st.write("Log duration, distance, RPE, optional reflection")
+    st.write("Log duration, distance, RPE, HR and notes.")
 
 
 def athlete_checkin(athlete_id: int):
@@ -399,6 +485,9 @@ def athlete_log(athlete_id: int):
         category = st.selectbox("Session Type", ["Easy Run", "Long Run", "Recovery Run", "Tempo / Threshold", "VO2 Intervals", "Hill Repeats", "Race Pace", "Strides / Neuromuscular", "Benchmark / Time Trial", "Taper / Openers", "Cross-Training Optional"])
         duration = st.number_input("Duration (min)", min_value=0, value=45)
         distance = st.number_input("Distance (km)", min_value=0.0, value=8.0)
+        avg_hr = st.number_input("Avg HR (optional)", min_value=0, value=0)
+        max_hr = st.number_input("Max HR (optional)", min_value=0, value=0)
+        avg_pace = st.number_input("Avg pace sec/km (optional)", min_value=0.0, value=0.0)
         rpe = st.slider("RPE", 1, 10, 5)
         notes = st.text_area("Notes")
         pain = st.checkbox("Pain flag", value=False)
@@ -406,7 +495,22 @@ def athlete_log(athlete_id: int):
     if submit:
         with session_scope() as s:
             load = float(duration) * (rpe / 10)
-            s.add(TrainingLog(athlete_id=athlete_id, date=date.today(), session_category=category, duration_min=int(duration), distance_km=float(distance), rpe=rpe, load_score=load, notes=notes, pain_flag=pain))
+            s.add(
+                TrainingLog(
+                    athlete_id=athlete_id,
+                    date=date.today(),
+                    session_category=category,
+                    duration_min=int(duration),
+                    distance_km=float(distance),
+                    avg_hr=(int(avg_hr) if avg_hr > 0 else None),
+                    max_hr=(int(max_hr) if max_hr > 0 else None),
+                    avg_pace_sec_per_km=(float(avg_pace) if avg_pace > 0 else None),
+                    rpe=rpe,
+                    load_score=load,
+                    notes=notes,
+                    pain_flag=pain,
+                )
+            )
             st.success("Logged")
 
 
