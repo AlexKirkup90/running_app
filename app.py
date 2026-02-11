@@ -106,22 +106,26 @@ def force_password_change(user_id: int):
 def coach_dashboard():
     st.header("Coach Dashboard")
     with session_scope() as s:
-        athletes = s.execute(select(Athlete)).scalars().all()
-        logs = s.execute(select(TrainingLog)).scalars().all()
-        intervs = s.execute(select(CoachIntervention).where(CoachIntervention.status == "open")).scalars().all()
-    active = sum(1 for a in athletes if a.status == "active")
-    archived = sum(1 for a in athletes if a.status == "archived")
-    deleted = sum(1 for a in athletes if a.status == "deleted")
+        athletes = s.execute(select(Athlete.id, Athlete.status)).all()
+        logs = s.execute(select(TrainingLog.id, TrainingLog.date, TrainingLog.duration_min, TrainingLog.load_score)).all()
+        intervs = s.execute(
+            select(CoachIntervention.athlete_id, CoachIntervention.action_type, CoachIntervention.risk_score, CoachIntervention.confidence_score).where(
+                CoachIntervention.status == "open"
+            )
+        ).all()
+    active = sum(1 for _, status in athletes if status == "active")
+    archived = sum(1 for _, status in athletes if status == "archived")
+    deleted = sum(1 for _, status in athletes if status == "deleted")
     a1, a2, a3 = st.columns(3)
     a1.metric("Active", active)
     a2.metric("Archived", archived)
     a3.metric("Deleted", deleted)
     st.subheader("Command Center Queue")
-    for i in intervs[:20]:
-        st.write(f"Athlete {i.athlete_id}: {i.action_type} | risk {i.risk_score} | conf {i.confidence_score}")
+    for athlete_id, action_type, risk_score, confidence_score in intervs[:20]:
+        st.write(f"Athlete {athlete_id}: {action_type} | risk {risk_score} | conf {confidence_score}")
 
     if logs:
-        df = pd.DataFrame([{"id": log_item.id, "date": log_item.date, "duration_min": log_item.duration_min, "load_score": log_item.load_score} for log_item in logs])
+        df = pd.DataFrame([{"id": log_id, "date": log_date, "duration_min": duration_min, "load_score": load_score} for log_id, log_date, duration_min, load_score in logs])
         w = weekly_summary(df)
         st.altair_chart(
             alt.Chart(w).mark_line(point=True).encode(x="week:N", y="load_score:Q", tooltip=["week", "load_score", "sessions"]),
@@ -132,8 +136,8 @@ def coach_dashboard():
 def coach_clients():
     st.header("Clients")
     with session_scope() as s:
-        rows = s.execute(select(Athlete)).scalars().all()
-    data = [{"id": a.id, "name": f"{a.first_name} {a.last_name}", "email": a.email, "status": a.status} for a in rows]
+        rows = s.execute(select(Athlete.id, Athlete.first_name, Athlete.last_name, Athlete.email, Athlete.status)).all()
+    data = [{"id": athlete_id, "name": f"{first_name} {last_name}", "email": email, "status": status} for athlete_id, first_name, last_name, email, status in rows]
     st.dataframe(pd.DataFrame(data), use_container_width=True)
 
 
@@ -164,10 +168,11 @@ def add_client():
 def athlete_dashboard(athlete_id: int):
     st.header("Today")
     with session_scope() as s:
-        checkin = s.execute(select(CheckIn).where(CheckIn.athlete_id == athlete_id, CheckIn.day == date.today())).scalar_one_or_none()
+        checkin = s.execute(select(CheckIn.sleep, CheckIn.energy, CheckIn.recovery, CheckIn.stress).where(CheckIn.athlete_id == athlete_id, CheckIn.day == date.today())).first()
     st.subheader("1) Check-In")
     if checkin:
-        score = readiness_score(checkin.sleep, checkin.energy, checkin.recovery, checkin.stress)
+        sleep, energy, recovery, stress = checkin
+        score = readiness_score(sleep, energy, recovery, stress)
         st.success(f"Readiness: {score} ({readiness_band(score)})")
     else:
         st.info("Complete your check-in")
@@ -217,16 +222,16 @@ def athlete_log(athlete_id: int):
 def athlete_analytics(athlete_id: int):
     st.header("Analytics")
     with session_scope() as s:
-        logs = s.execute(select(TrainingLog).where(TrainingLog.athlete_id == athlete_id)).scalars().all()
-        events = s.execute(select(Event).where(Event.athlete_id == athlete_id)).scalars().all()
+        logs = s.execute(select(TrainingLog.id, TrainingLog.date, TrainingLog.duration_min, TrainingLog.load_score).where(TrainingLog.athlete_id == athlete_id)).all()
+        events = s.execute(select(Event.event_date).where(Event.athlete_id == athlete_id)).all()
     if not logs:
         st.info("No logs yet")
         return
-    df = pd.DataFrame([{"id": log_item.id, "date": log_item.date, "duration_min": log_item.duration_min, "load_score": log_item.load_score} for log_item in logs])
+    df = pd.DataFrame([{"id": log_id, "date": log_date, "duration_min": duration_min, "load_score": load_score} for log_id, log_date, duration_min, load_score in logs])
     w = weekly_summary(df)
     st.line_chart(w.set_index("week")["duration_min"])
     if events:
-        st.write("Next event in days:", min((e.event_date - date.today()).days for e in events))
+        st.write("Next event in days:", min((event_date - date.today()).days for (event_date,) in events))
 
 
 def main():
