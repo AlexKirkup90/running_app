@@ -10,7 +10,9 @@ Production-ready Streamlit coaching platform for running (coach + athlete experi
 - Athlete Today flow enforcement: check-in -> adaptive session briefing -> single daily log (upsert) with planned-session completion tracking.
 - Plan generation (12/24/36/48 weeks), cutback weeks, phases (Base/Build/Peak/Taper/Recovery).
 - Recommendation engine with risk/confidence, explainable factors, guardrails, and automation modes.
-- Coach command center + athlete today-first flow.
+- Connected command center queue (auto-synced from check-ins, logs, events, and adherence) with coach decision actions.
+- Casework workflow in Command Center (athlete timeline, coach notes/tasks, and recent-context panels).
+- Caseload operations: batch intervention decisions plus queue SLA widgets (24h/72h) with queue-age telemetry.
 - Analytics (weekly rollups), observability status strip, runtime error logging.
 - Import adapter scaffold and item/run audit tables.
 

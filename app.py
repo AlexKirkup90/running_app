@@ -6,14 +6,17 @@ from datetime import date, datetime, timedelta
 import altair as alt
 import pandas as pd
 import streamlit as st
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from core.bootstrap import ensure_demo_seeded
 from core.db import session_scope
-from core.models import Athlete, AthletePreference, CheckIn, CoachIntervention, Event, ImportRun, Plan, PlanDaySession, PlanWeek, SessionLibrary, TrainingLog, User
+from core.models import Athlete, AthletePreference, CheckIn, CoachActionLog, CoachIntervention, CoachNotesTask, Event, ImportRun, Plan, PlanDaySession, PlanWeek, SessionLibrary, TrainingLog, User
 from core.observability import system_status
 from core.security import account_locked, hash_password, verify_password
 from core.services.analytics import weekly_summary
+from core.services.case_management import build_case_timeline
+from core.services.command_center import risk_priority, sync_interventions_queue
+from core.services.workload import queue_snapshot
 from core.services.planning import assign_week_sessions, default_phase_session_tokens, generate_plan_weeks
 from core.services.readiness import readiness_band, readiness_score
 from core.services.session_library import (
@@ -121,13 +124,18 @@ def force_password_change(user_id: int):
 
 def coach_dashboard():
     st.header("Coach Dashboard")
+    try:
+        sync_interventions_queue()
+    except Exception:
+        pass
     with session_scope() as s:
         athletes = s.execute(select(Athlete.id, Athlete.status)).all()
         logs = s.execute(select(TrainingLog.id, TrainingLog.date, TrainingLog.duration_min, TrainingLog.load_score)).all()
         intervs = s.execute(
-            select(CoachIntervention.athlete_id, CoachIntervention.action_type, CoachIntervention.risk_score, CoachIntervention.confidence_score).where(
-                CoachIntervention.status == "open"
-            )
+            select(Athlete.first_name, Athlete.last_name, CoachIntervention.action_type, CoachIntervention.risk_score, CoachIntervention.confidence_score)
+            .join(Athlete, Athlete.id == CoachIntervention.athlete_id)
+            .where(CoachIntervention.status == "open")
+            .order_by(CoachIntervention.risk_score.desc(), CoachIntervention.id.desc())
         ).all()
     active = sum(1 for _, status in athletes if status == "active")
     archived = sum(1 for _, status in athletes if status == "archived")
@@ -137,8 +145,12 @@ def coach_dashboard():
     a2.metric("Archived", archived)
     a3.metric("Deleted", deleted)
     st.subheader("Command Center Queue")
-    for athlete_id, action_type, risk_score, confidence_score in intervs[:20]:
-        st.write(f"Athlete {athlete_id}: {action_type} | risk {risk_score} | conf {confidence_score}")
+    for first_name, last_name, action_type, risk_score, confidence_score in intervs[:20]:
+        st.write(
+            f"{first_name} {last_name}: {action_type} | "
+            f"priority {risk_priority(float(risk_score or 0))} | "
+            f"risk {risk_score} | conf {confidence_score}"
+        )
 
     if logs:
         df = pd.DataFrame([{"id": log_id, "date": log_date, "duration_min": duration_min, "load_score": load_score} for log_id, log_date, duration_min, load_score in logs])
@@ -153,55 +165,526 @@ def coach_clients():
     st.header("Clients")
     with session_scope() as s:
         rows = s.execute(select(Athlete.id, Athlete.first_name, Athlete.last_name, Athlete.email, Athlete.status)).all()
-    data = [{"id": athlete_id, "name": f"{first_name} {last_name}", "email": email, "status": status} for athlete_id, first_name, last_name, email, status in rows]
+        open_interventions = {
+            athlete_id: (count_open, max_risk)
+            for athlete_id, count_open, max_risk in s.execute(
+                select(
+                    CoachIntervention.athlete_id,
+                    func.count(CoachIntervention.id),
+                    func.max(CoachIntervention.risk_score),
+                ).where(CoachIntervention.status == "open").group_by(CoachIntervention.athlete_id)
+            ).all()
+        }
+        last_checkin = {
+            athlete_id: day
+            for athlete_id, day in s.execute(select(CheckIn.athlete_id, func.max(CheckIn.day)).group_by(CheckIn.athlete_id)).all()
+        }
+        last_log = {
+            athlete_id: day
+            for athlete_id, day in s.execute(select(TrainingLog.athlete_id, func.max(TrainingLog.date)).group_by(TrainingLog.athlete_id)).all()
+        }
+    data = []
+    for athlete_id, first_name, last_name, email, status in rows:
+        open_count, max_risk = open_interventions.get(athlete_id, (0, 0.0))
+        data.append(
+            {
+                "id": athlete_id,
+                "name": f"{first_name} {last_name}",
+                "email": email,
+                "status": status,
+                "open_interventions": int(open_count or 0),
+                "highest_risk": float(max_risk or 0),
+                "risk_priority": risk_priority(float(max_risk or 0)) if open_count else "none",
+                "last_checkin": last_checkin.get(athlete_id),
+                "last_log": last_log.get(athlete_id),
+            }
+        )
     st.dataframe(pd.DataFrame(data), use_container_width=True)
+
+
+def _apply_intervention_decision(
+    s,
+    rec: CoachIntervention,
+    decision: str,
+    note: str,
+    modified_action: str | None,
+    actor_user_id: int,
+) -> None:
+    note_fragment = note.strip() if note.strip() else "no_note"
+    if decision == "accept_and_close":
+        rec.status = "closed"
+        rec.cooldown_until = None
+        rec.why_factors = list(rec.why_factors or []) + [f"decision:accepted:{note_fragment}"]
+    elif decision == "defer_24h":
+        rec.cooldown_until = datetime.utcnow() + timedelta(hours=24)
+        rec.why_factors = list(rec.why_factors or []) + [f"decision:defer_24h:{note_fragment}"]
+    elif decision == "defer_72h":
+        rec.cooldown_until = datetime.utcnow() + timedelta(hours=72)
+        rec.why_factors = list(rec.why_factors or []) + [f"decision:defer_72h:{note_fragment}"]
+    elif decision == "modify_action":
+        rec.action_type = modified_action or rec.action_type
+        rec.cooldown_until = None
+        rec.why_factors = list(rec.why_factors or []) + [f"decision:modified:{note_fragment}"]
+    else:
+        rec.status = "closed"
+        rec.cooldown_until = None
+        rec.why_factors = list(rec.why_factors or []) + [f"decision:dismissed:{note_fragment}"]
+
+    s.add(
+        CoachActionLog(
+            coach_user_id=actor_user_id,
+            athlete_id=int(rec.athlete_id),
+            action=f"intervention_{decision}",
+            payload={
+                "intervention_id": int(rec.id),
+                "action_type": rec.action_type,
+                "note": note.strip(),
+            },
+        )
+    )
 
 
 def coach_command_center():
     st.header("Command Center")
-    with session_scope() as s:
-        rows = s.execute(
-            select(
-                CoachIntervention.id,
-                CoachIntervention.athlete_id,
-                CoachIntervention.action_type,
-                CoachIntervention.status,
-                CoachIntervention.risk_score,
-                CoachIntervention.confidence_score,
-                CoachIntervention.guardrail_reason,
-            ).where(CoachIntervention.status == "open")
-        ).all()
-    if not rows:
-        st.success("No open interventions.")
-        return
-    df = pd.DataFrame(
-        [
-            {
-                "id": iid,
-                "athlete_id": athlete_id,
-                "action": action,
-                "status": status,
-                "risk": risk,
-                "confidence": confidence,
-                "guardrail_reason": guardrail_reason,
-            }
-            for iid, athlete_id, action, status, risk, confidence, guardrail_reason in rows
-        ]
-    )
-    st.dataframe(df, use_container_width=True)
+    queue_tab, case_tab = st.tabs(["Queue", "Casework"])
 
-    with st.form("resolve_intervention"):
-        intervention_id = st.number_input("Intervention ID to close", min_value=1, value=int(df.iloc[0]["id"]))
-        submit = st.form_submit_button("Mark Closed")
-    if submit:
+    with queue_tab:
+        with st.expander("Queue Refresh", expanded=True):
+            if st.button("Refresh Queue", type="primary"):
+                try:
+                    result = sync_interventions_queue()
+                    st.success(f"Queue refreshed: +{result['created']} created, {result['updated']} updated, {result['closed']} closed.")
+                except Exception as e:
+                    st.error(f"Queue refresh failed: {e}")
+
+        try:
+            sync_interventions_queue()
+        except Exception:
+            pass
+
         with session_scope() as s:
-            rec = s.get(CoachIntervention, int(intervention_id))
-            if rec is None:
-                st.error("Intervention not found.")
+            rows = s.execute(
+                select(
+                    CoachIntervention.id,
+                    CoachIntervention.athlete_id,
+                    Athlete.first_name,
+                    Athlete.last_name,
+                    CoachIntervention.action_type,
+                    CoachIntervention.status,
+                    CoachIntervention.risk_score,
+                    CoachIntervention.confidence_score,
+                    CoachIntervention.guardrail_reason,
+                    CoachIntervention.why_factors,
+                    CoachIntervention.expected_impact,
+                    CoachIntervention.cooldown_until,
+                    CoachIntervention.created_at,
+                )
+                .join(Athlete, Athlete.id == CoachIntervention.athlete_id)
+                .where(CoachIntervention.status == "open")
+                .order_by(CoachIntervention.risk_score.desc(), CoachIntervention.id.desc())
+            ).all()
+        if not rows:
+            st.success("No open interventions.")
+        else:
+            now = datetime.utcnow()
+            df = pd.DataFrame(
+                [
+                    {
+                        "id": iid,
+                        "athlete_id": athlete_id,
+                        "athlete": f"{first_name} {last_name}",
+                        "action": action,
+                        "status": status,
+                        "risk": risk,
+                        "priority": risk_priority(float(risk or 0)),
+                        "confidence": confidence,
+                        "guardrail_reason": guardrail_reason,
+                        "why_factors": ", ".join(why_factors or []),
+                        "signals": (expected_impact or {}).get("signals", {}),
+                        "cooldown_until": cooldown_until,
+                        "created_at": created_at,
+                        "age_hours": round(max(0.0, (now - created_at).total_seconds() / 3600.0), 1) if created_at else None,
+                        "is_snoozed": bool(cooldown_until and cooldown_until > now),
+                    }
+                    for (
+                        iid,
+                        athlete_id,
+                        first_name,
+                        last_name,
+                        action,
+                        status,
+                        risk,
+                        confidence,
+                        guardrail_reason,
+                        why_factors,
+                        expected_impact,
+                        cooldown_until,
+                        created_at,
+                    ) in rows
+                ]
+            )
+            snapshot = queue_snapshot(df.to_dict(orient="records"), now)
+
+            if "case_athlete_id" not in st.session_state:
+                st.session_state.case_athlete_id = int(df.iloc[0]["athlete_id"])
+
+            actionable_df = df[~df["is_snoozed"]]
+            snoozed_df = df[df["is_snoozed"]]
+
+            c1, c2, c3, c4, c5, c6 = st.columns(6)
+            c1.metric("Open", snapshot.open_count)
+            c2.metric("High Priority", snapshot.high_priority)
+            c3.metric("Actionable Now", snapshot.actionable_now)
+            c4.metric("Snoozed", snapshot.snoozed)
+            c5.metric("SLA Due 24h", snapshot.sla_due_24h)
+            c6.metric("SLA Due 72h", snapshot.sla_due_72h)
+            st.caption(f"Median queue age: {snapshot.median_age_hours}h | Oldest: {snapshot.oldest_age_hours}h")
+
+            st.subheader("Actionable Queue")
+            if actionable_df.empty:
+                st.info("No actionable interventions right now.")
             else:
-                rec.status = "closed"
-                st.success(f"Intervention {intervention_id} closed.")
-                st.rerun()
+                st.dataframe(actionable_df.drop(columns=["is_snoozed"]), use_container_width=True)
+            if not snoozed_df.empty:
+                st.subheader("Snoozed")
+                st.dataframe(snoozed_df.drop(columns=["is_snoozed"]), use_container_width=True)
+
+            athlete_labels = {}
+            for _, row in df.iterrows():
+                aid = int(row["athlete_id"])
+                athlete_labels[f"{row['athlete']} (#{aid})"] = aid
+            focus_label = st.selectbox("Open Athlete in Casework", list(athlete_labels.keys()))
+            if st.button("Focus Athlete"):
+                st.session_state.case_athlete_id = athlete_labels[focus_label]
+                st.success("Athlete focused for Casework tab.")
+
+            action_options = ["recovery_week", "taper_week", "contact_athlete", "monitor"]
+            intervention_lookup = {str(int(row["id"])): int(row["id"]) for _, row in df.iterrows()}
+            st.subheader("Batch Queue Actions")
+            batch_label_map = {
+                f"{int(row['id'])} | {row['athlete']} | {row['action']} | risk {row['risk']}": int(row["id"])
+                for _, row in actionable_df.iterrows()
+            }
+            with st.form("batch_resolve_interventions"):
+                selected_batch_labels = st.multiselect("Interventions", list(batch_label_map.keys()), key="batch_intervention_ids")
+                batch_decision = st.selectbox(
+                    "Batch Decision",
+                    ["accept_and_close", "defer_24h", "defer_72h", "modify_action", "dismiss"],
+                    key="batch_decision",
+                )
+                batch_modified_action = None
+                if batch_decision == "modify_action":
+                    batch_modified_action = st.selectbox("Batch Modified action", action_options, index=0, key="batch_modified_action")
+                batch_note = st.text_input("Batch Note", value="", key="batch_note")
+                batch_submit = st.form_submit_button("Apply Batch Action")
+            if batch_submit:
+                if not selected_batch_labels:
+                    st.error("Select at least one intervention for batch action.")
+                else:
+                    selected_ids = [batch_label_map[label] for label in selected_batch_labels]
+                    applied = 0
+                    with session_scope() as s:
+                        for intervention_id in selected_ids:
+                            rec = s.get(CoachIntervention, int(intervention_id))
+                            if rec is None or rec.status != "open":
+                                continue
+                            _apply_intervention_decision(
+                                s,
+                                rec,
+                                batch_decision,
+                                batch_note,
+                                batch_modified_action,
+                                int(st.session_state.user_id),
+                            )
+                            applied += 1
+                    st.success(f"Batch action applied to {applied} intervention(s).")
+                    st.rerun()
+
+            st.subheader("Single Intervention Action")
+            with st.form("resolve_intervention"):
+                intervention_id_label = st.selectbox("Intervention ID", list(intervention_lookup.keys()), key="single_intervention_id")
+                decision = st.selectbox("Decision", ["accept_and_close", "defer_24h", "defer_72h", "modify_action", "dismiss"], key="single_decision")
+                modified_action = None
+                if decision == "modify_action":
+                    modified_action = st.selectbox("Modified action", action_options, index=0, key="single_modified_action")
+                note = st.text_input("Note", value="", key="single_note")
+                submit = st.form_submit_button("Apply Decision")
+            if submit:
+                intervention_id = intervention_lookup[intervention_id_label]
+                with session_scope() as s:
+                    rec = s.get(CoachIntervention, int(intervention_id))
+                    if rec is None:
+                        st.error("Intervention not found.")
+                    else:
+                        _apply_intervention_decision(
+                            s,
+                            rec,
+                            decision,
+                            note,
+                            modified_action,
+                            int(st.session_state.user_id),
+                        )
+                        st.success(f"Intervention {intervention_id} updated.")
+                        st.rerun()
+
+    with case_tab:
+        with session_scope() as s:
+            athlete_rows = s.execute(
+                select(
+                    Athlete.id,
+                    Athlete.first_name,
+                    Athlete.last_name,
+                    func.count(CoachIntervention.id),
+                    func.max(CoachIntervention.risk_score),
+                )
+                .outerjoin(CoachIntervention, (CoachIntervention.athlete_id == Athlete.id) & (CoachIntervention.status == "open"))
+                .where(Athlete.status == "active")
+                .group_by(Athlete.id, Athlete.first_name, Athlete.last_name)
+                .order_by(Athlete.first_name, Athlete.last_name)
+            ).all()
+        if not athlete_rows:
+            st.info("No active athletes available.")
+            return
+
+        athlete_options: dict[str, int] = {}
+        athlete_ids: list[int] = []
+        for athlete_id, first_name, last_name, open_count, max_risk in athlete_rows:
+            label = (
+                f"{first_name} {last_name} (#{athlete_id}) | "
+                f"open={int(open_count or 0)} | priority={risk_priority(float(max_risk or 0)) if open_count else 'none'}"
+            )
+            athlete_options[label] = int(athlete_id)
+            athlete_ids.append(int(athlete_id))
+
+        current_case_athlete = int(st.session_state.get("case_athlete_id", athlete_ids[0]))
+        if current_case_athlete not in athlete_ids:
+            current_case_athlete = athlete_ids[0]
+        default_idx = athlete_ids.index(current_case_athlete)
+        case_label = st.selectbox("Athlete Case", list(athlete_options.keys()), index=default_idx)
+        athlete_id = athlete_options[case_label]
+        st.session_state.case_athlete_id = athlete_id
+
+        with session_scope() as s:
+            open_interventions = s.execute(
+                select(
+                    CoachIntervention.id,
+                    CoachIntervention.action_type,
+                    CoachIntervention.risk_score,
+                    CoachIntervention.confidence_score,
+                    CoachIntervention.guardrail_reason,
+                    CoachIntervention.why_factors,
+                    CoachIntervention.cooldown_until,
+                    CoachIntervention.created_at,
+                )
+                .where(CoachIntervention.athlete_id == athlete_id, CoachIntervention.status == "open")
+                .order_by(CoachIntervention.risk_score.desc(), CoachIntervention.id.desc())
+            ).all()
+            action_logs = s.execute(
+                select(CoachActionLog.action, CoachActionLog.payload, CoachActionLog.created_at)
+                .where(CoachActionLog.athlete_id == athlete_id)
+                .order_by(CoachActionLog.created_at.desc())
+                .limit(120)
+            ).all()
+            notes_tasks = s.execute(
+                select(CoachNotesTask.id, CoachNotesTask.note, CoachNotesTask.due_date, CoachNotesTask.completed)
+                .where(CoachNotesTask.athlete_id == athlete_id)
+                .order_by(CoachNotesTask.completed.asc(), CoachNotesTask.due_date.asc(), CoachNotesTask.id.desc())
+                .limit(120)
+            ).all()
+            recent_logs = s.execute(
+                select(TrainingLog.date, TrainingLog.session_category, TrainingLog.duration_min, TrainingLog.rpe, TrainingLog.pain_flag, TrainingLog.load_score)
+                .where(TrainingLog.athlete_id == athlete_id)
+                .order_by(TrainingLog.date.desc())
+                .limit(30)
+            ).all()
+            recent_checkins = s.execute(
+                select(CheckIn.day, CheckIn.sleep, CheckIn.energy, CheckIn.recovery, CheckIn.stress)
+                .where(CheckIn.athlete_id == athlete_id)
+                .order_by(CheckIn.day.desc())
+                .limit(30)
+            ).all()
+            upcoming_events = s.execute(
+                select(Event.event_date, Event.name, Event.distance)
+                .where(Event.athlete_id == athlete_id, Event.event_date >= date.today())
+                .order_by(Event.event_date.asc())
+                .limit(10)
+            ).all()
+
+        open_tasks = sum(1 for _id, _note, _due, completed in notes_tasks if not completed)
+        last_log_day = recent_logs[0][0] if recent_logs else None
+        days_since_log = (date.today() - last_log_day).days if last_log_day else None
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Open Interventions", len(open_interventions))
+        m2.metric("Open Notes/Tasks", open_tasks)
+        m3.metric("Days Since Last Log", days_since_log if days_since_log is not None else "n/a")
+
+        if open_interventions:
+            st.subheader("Open Interventions")
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "id": iid,
+                            "action": action,
+                            "risk": risk,
+                            "priority": risk_priority(float(risk or 0)),
+                            "confidence": confidence,
+                            "guardrail_reason": guardrail_reason,
+                            "why_factors": ", ".join(why_factors or []),
+                            "cooldown_until": cooldown_until,
+                            "created_at": created_at,
+                            "age_hours": round(max(0.0, (datetime.utcnow() - created_at).total_seconds() / 3600.0), 1) if created_at else None,
+                        }
+                        for iid, action, risk, confidence, guardrail_reason, why_factors, cooldown_until, created_at in open_interventions
+                    ]
+                ),
+                use_container_width=True,
+            )
+
+        notes_tab, timeline_tab, context_tab = st.tabs(["Notes & Tasks", "Timeline", "Recent Context"])
+
+        with notes_tab:
+            with st.form("add_case_task"):
+                note = st.text_area("Coach note / task")
+                set_due = st.checkbox("Set due date", value=True)
+                due = st.date_input("Due date", value=date.today() + timedelta(days=2))
+                submit_note = st.form_submit_button("Add Task")
+            if submit_note:
+                if not note.strip():
+                    st.error("Note/task text is required.")
+                else:
+                    with session_scope() as s:
+                        due_date = due if set_due else None
+                        task = CoachNotesTask(athlete_id=athlete_id, note=note.strip(), due_date=due_date, completed=False)
+                        s.add(task)
+                        s.add(
+                            CoachActionLog(
+                                coach_user_id=int(st.session_state.user_id),
+                                athlete_id=athlete_id,
+                                action="note_task_added",
+                                payload={"note": note.strip(), "due_date": str(due_date) if due_date else None},
+                            )
+                        )
+                    st.success("Task added.")
+                    st.rerun()
+
+            if notes_tasks:
+                tasks_df = pd.DataFrame(
+                    [
+                        {"id": tid, "note": note, "due_date": due_date, "completed": completed}
+                        for tid, note, due_date, completed in notes_tasks
+                    ]
+                )
+                st.dataframe(tasks_df, use_container_width=True)
+
+                task_lookup = {
+                    f"#{tid} | {'done' if completed else 'open'} | due={due_date} | {note[:40]}": tid
+                    for tid, note, due_date, completed in notes_tasks
+                }
+                with st.form("update_case_task"):
+                    task_label = st.selectbox("Task", list(task_lookup.keys()))
+                    task_action = st.selectbox("Update", ["mark_completed", "reopen", "delete"])
+                    task_submit = st.form_submit_button("Apply Task Update")
+                if task_submit:
+                    task_id = int(task_lookup[task_label])
+                    with session_scope() as s:
+                        task = s.get(CoachNotesTask, task_id)
+                        if not task:
+                            st.error("Task not found.")
+                        else:
+                            if task_action == "mark_completed":
+                                task.completed = True
+                            elif task_action == "reopen":
+                                task.completed = False
+                            else:
+                                s.delete(task)
+                            s.add(
+                                CoachActionLog(
+                                    coach_user_id=int(st.session_state.user_id),
+                                    athlete_id=athlete_id,
+                                    action=f"note_task_{task_action}",
+                                    payload={"task_id": task_id},
+                                )
+                            )
+                            st.success("Task updated.")
+                            st.rerun()
+            else:
+                st.info("No notes/tasks yet for this athlete.")
+
+        with timeline_tab:
+            timeline = build_case_timeline(
+                coach_actions=[{"action": action, "payload": payload, "created_at": created_at} for action, payload, created_at in action_logs],
+                training_logs=[
+                    {"date": d, "session_category": category, "rpe": rpe, "pain_flag": pain_flag}
+                    for d, category, _duration, rpe, pain_flag, _load in recent_logs
+                ],
+                checkins=[
+                    {"day": day, "sleep": sleep, "energy": energy, "recovery": recovery, "stress": stress}
+                    for day, sleep, energy, recovery, stress in recent_checkins
+                ],
+                events=[{"event_date": event_date, "name": name, "distance": distance} for event_date, name, distance in upcoming_events],
+                notes_tasks=[{"id": tid, "note": note, "due_date": due_date, "completed": completed} for tid, note, due_date, completed in notes_tasks],
+            )
+            if not timeline:
+                st.info("No timeline entries yet.")
+            else:
+                timeline_df = pd.DataFrame(
+                    [
+                        {
+                            "when": item["when"].strftime("%Y-%m-%d %H:%M"),
+                            "source": item["source"],
+                            "title": item["title"],
+                            "detail": item["detail"],
+                        }
+                        for item in timeline[:120]
+                    ]
+                )
+                st.dataframe(timeline_df, use_container_width=True)
+
+        with context_tab:
+            if recent_logs:
+                st.subheader("Recent Training Logs")
+                st.dataframe(
+                    pd.DataFrame(
+                        [
+                            {
+                                "date": d,
+                                "session_category": category,
+                                "duration_min": duration,
+                                "rpe": rpe,
+                                "pain_flag": pain_flag,
+                                "load_score": load_score,
+                            }
+                            for d, category, duration, rpe, pain_flag, load_score in recent_logs
+                        ]
+                    ),
+                    use_container_width=True,
+                )
+            else:
+                st.info("No recent training logs.")
+
+            if recent_checkins:
+                st.subheader("Recent Check-Ins")
+                st.dataframe(
+                    pd.DataFrame(
+                        [
+                            {"day": day, "sleep": sleep, "energy": energy, "recovery": recovery, "stress": stress}
+                            for day, sleep, energy, recovery, stress in recent_checkins
+                        ]
+                    ),
+                    use_container_width=True,
+                )
+            else:
+                st.info("No recent check-ins.")
+
+            if upcoming_events:
+                st.subheader("Upcoming Events")
+                st.dataframe(
+                    pd.DataFrame([{"event_date": event_date, "name": name, "distance": distance} for event_date, name, distance in upcoming_events]),
+                    use_container_width=True,
+                )
+            else:
+                st.info("No upcoming events.")
 
 
 def coach_plan_builder():

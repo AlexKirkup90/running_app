@@ -210,6 +210,7 @@ class CoachIntervention(Base):
     guardrail_pass: Mapped[bool] = mapped_column(Boolean, default=True)
     guardrail_reason: Mapped[str] = mapped_column(String(255), default="ok")
     cooldown_until: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class AthletePreference(Base):
