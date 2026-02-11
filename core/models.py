@@ -96,6 +96,21 @@ class PlanWeek(Base):
     __table_args__ = (UniqueConstraint("plan_id", "week_number", name="uq_plan_week"),)
 
 
+class PlanDaySession(Base):
+    __tablename__ = "plan_day_sessions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    plan_week_id: Mapped[int] = mapped_column(ForeignKey("plan_weeks.id"), index=True)
+    athlete_id: Mapped[int] = mapped_column(ForeignKey("athletes.id"), index=True)
+    session_day: Mapped[date] = mapped_column(Date, index=True)
+    session_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    source_template_name: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(20), default="planned")
+    __table_args__ = (
+        UniqueConstraint("athlete_id", "session_day", name="uq_plan_day_session_athlete_day"),
+        UniqueConstraint("plan_week_id", "session_day", name="uq_plan_day_session_week_day"),
+    )
+
+
 class PlanWeekMetric(Base):
     __tablename__ = "plan_week_metrics"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

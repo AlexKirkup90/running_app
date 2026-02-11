@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 
 RACE_LONG_RUN_TARGET = {"5K": 75, "10K": 95, "Half Marathon": 130, "Marathon": 180}
+SESSION_DAY_OFFSETS = [0, 1, 3, 5, 6, 2, 4]
 
 
 @dataclass
@@ -28,7 +29,7 @@ def _phase_for_week(week: int, total: int) -> str:
     return "Taper"
 
 
-def _sessions_for_phase(phase: str, sessions_per_week: int) -> list[str]:
+def default_phase_session_tokens(phase: str, sessions_per_week: int) -> list[str]:
     phase_templates = {
         "Base": ["Easy Run", "Long Run", "Strides / Neuromuscular", "Recovery Run", "Easy Run", "Cross-Training Optional"],
         "Build": ["Tempo / Threshold", "VO2 Intervals", "Long Run", "Easy Run", "Hill Repeats", "Recovery Run"],
@@ -38,6 +39,14 @@ def _sessions_for_phase(phase: str, sessions_per_week: int) -> list[str]:
     }
     base = phase_templates.get(phase, phase_templates["Base"])
     return base[:sessions_per_week]
+
+
+def assign_week_sessions(week_start: date, session_names: list[str]) -> list[dict]:
+    assignments: list[dict] = []
+    for idx, session_name in enumerate(session_names):
+        offset = SESSION_DAY_OFFSETS[idx % len(SESSION_DAY_OFFSETS)]
+        assignments.append({"session_day": week_start + timedelta(days=offset), "session_name": session_name})
+    return assignments
 
 
 def generate_plan_weeks(start_date: date, weeks: int, race_goal: str, sessions_per_week: int = 4, max_session_min: int = 120) -> list[dict]:
@@ -51,7 +60,7 @@ def generate_plan_weeks(start_date: date, weeks: int, race_goal: str, sessions_p
         target_load = long_run * sessions_per_week * (1.1 if phase in {"Build", "Peak"} else 0.9)
         week_start = start_date + timedelta(days=(wk - 1) * 7)
         week_end = week_start + timedelta(days=6)
-        sessions_order = _sessions_for_phase(phase, sessions_per_week)
+        sessions_order = default_phase_session_tokens(phase, sessions_per_week)
         rows.append(
             {
                 "week_number": wk,

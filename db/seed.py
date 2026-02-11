@@ -8,9 +8,9 @@ from alembic.config import Config
 from sqlalchemy import select
 
 from core.db import session_scope
-from core.models import Athlete, AthletePreference, CheckIn, Event, Plan, PlanWeek, SessionLibrary, TrainingLog, User
+from core.models import Athlete, AthletePreference, CheckIn, Event, Plan, PlanDaySession, PlanWeek, SessionLibrary, TrainingLog, User
 from core.security import hash_password
-from core.services.planning import generate_plan_weeks
+from core.services.planning import assign_week_sessions, generate_plan_weeks
 
 CATEGORIES = [
     "Easy Run",
@@ -203,7 +203,24 @@ def seed_users_athletes() -> None:
                 s.add(plan)
                 s.flush()
                 weeks = generate_plan_weeks(plan.start_date, plan.weeks, plan.race_goal, plan.sessions_per_week, plan.max_session_min)
-                s.add_all([PlanWeek(plan_id=plan.id, **w) for w in weeks])
+                for w in weeks:
+                    week = PlanWeek(plan_id=plan.id, **w)
+                    s.add(week)
+                    s.flush()
+                    assignments = assign_week_sessions(week.week_start, week.sessions_order)
+                    s.add_all(
+                        [
+                            PlanDaySession(
+                                plan_week_id=week.id,
+                                athlete_id=athlete.id,
+                                session_day=a["session_day"],
+                                session_name=a["session_name"],
+                                source_template_name=a["session_name"],
+                                status="planned",
+                            )
+                            for a in assignments
+                        ]
+                    )
 
                 s.add(Event(athlete_id=athlete.id, name=f"Goal {plan.race_goal}", event_date=date.today() + timedelta(days=120), distance=plan.race_goal))
                 for d in range(21):
@@ -213,10 +230,38 @@ def seed_users_athletes() -> None:
                         s.add(CheckIn(athlete_id=athlete.id, day=log_date, sleep=3 + d % 2, energy=3, recovery=3, stress=2 + d % 2, training_today=True))
 
 
+def backfill_plan_day_sessions() -> None:
+    with session_scope() as s:
+        weeks = s.execute(
+            select(PlanWeek.id, PlanWeek.week_start, PlanWeek.sessions_order, Plan.athlete_id).join(Plan, Plan.id == PlanWeek.plan_id)
+        ).all()
+        for week_id, week_start, sessions_order, athlete_id in weeks:
+            existing = s.execute(select(PlanDaySession.id).where(PlanDaySession.plan_week_id == week_id)).first()
+            if existing:
+                continue
+            if not isinstance(sessions_order, list) or not sessions_order:
+                continue
+            assignments = assign_week_sessions(week_start, sessions_order)
+            s.add_all(
+                [
+                    PlanDaySession(
+                        plan_week_id=week_id,
+                        athlete_id=athlete_id,
+                        session_day=a["session_day"],
+                        session_name=a["session_name"],
+                        source_template_name=a["session_name"],
+                        status="planned",
+                    )
+                    for a in assignments
+                ]
+            )
+
+
 def main() -> None:
     run_migrations()
     seed_sessions()
     seed_users_athletes()
+    backfill_plan_day_sessions()
     print("Seeding complete")
 
 

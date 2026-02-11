@@ -6,6 +6,7 @@ Production-ready Streamlit coaching platform for running (coach + athlete experi
 - Role-based auth (`coach`, `client`) with lockout, password policy, and forced password change.
 - Running-specific taxonomy and seeded library (120 structured sessions).
 - Canonical running session contract with warmup/main/cooldown blocks, pace/HR/RPE targets, and progression/regression rules.
+- Plan Builder v2 with preview-before-publish, persisted day-level sessions, and week management (swap/lock/regenerate).
 - Plan generation (12/24/36/48 weeks), cutback weeks, phases (Base/Build/Peak/Taper/Recovery).
 - Recommendation engine with risk/confidence, explainable factors, guardrails, and automation modes.
 - Coach command center + athlete today-first flow.
@@ -45,6 +46,7 @@ streamlit run app.py
 ## Migrations & Seed
 - Baseline migration: `alembic/versions/20260101_0001_initial.py`
 - Session quality schema migration: `alembic/versions/20260211_0002_session_quality_schema.py`
+- Plan day-session migration: `alembic/versions/20260211_0003_plan_day_sessions.py`
 - Idempotent seed: `db/seed.py` (runs migrations, seeds sessions + users + demo plans/events/logs)
 
 ## Tests

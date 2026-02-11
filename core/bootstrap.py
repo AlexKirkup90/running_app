@@ -19,17 +19,21 @@ def ensure_demo_seeded() -> bool:
             coach = s.execute(select(User.id).where(User.username == "coach")).scalar_one_or_none()
             has_sessions = s.execute(select(SessionLibrary.id)).first() is not None
             if coach and has_sessions:
+                from db.seed import backfill_plan_day_sessions
+
+                backfill_plan_day_sessions()
                 _reconcile_demo_credentials()
                 return False
     except Exception:
         # Tables may not exist yet; continue into migration/seed path.
         pass
 
-    from db.seed import run_migrations, seed_sessions, seed_users_athletes
+    from db.seed import backfill_plan_day_sessions, run_migrations, seed_sessions, seed_users_athletes
 
     run_migrations()
     seed_sessions()
     seed_users_athletes()
+    backfill_plan_day_sessions()
     _reconcile_demo_credentials()
     return True
 

@@ -10,11 +10,11 @@ from sqlalchemy import select
 
 from core.bootstrap import ensure_demo_seeded
 from core.db import session_scope
-from core.models import Athlete, AthletePreference, CheckIn, CoachIntervention, Event, ImportRun, Plan, PlanWeek, SessionLibrary, TrainingLog, User
+from core.models import Athlete, AthletePreference, CheckIn, CoachIntervention, Event, ImportRun, Plan, PlanDaySession, PlanWeek, SessionLibrary, TrainingLog, User
 from core.observability import system_status
 from core.security import account_locked, hash_password, verify_password
 from core.services.analytics import weekly_summary
-from core.services.planning import generate_plan_weeks
+from core.services.planning import assign_week_sessions, default_phase_session_tokens, generate_plan_weeks
 from core.services.readiness import readiness_band, readiness_score
 from core.services.session_library import (
     default_progression,
@@ -206,73 +206,295 @@ def coach_command_center():
 
 def coach_plan_builder():
     st.header("Plan Builder")
+    preview_key = "plan_builder_preview_v2"
+
+    def _load_session_catalog(s):
+        session_rows = s.execute(select(SessionLibrary.name, SessionLibrary.category, SessionLibrary.tier, SessionLibrary.duration_min)).all()
+        by_cat_tier: dict[tuple[str, str], list[str]] = {}
+        by_cat: dict[str, list[str]] = {}
+        for name, category, tier, _duration in session_rows:
+            by_cat_tier.setdefault((category, tier), []).append(name)
+            by_cat.setdefault(category, []).append(name)
+        return by_cat_tier, by_cat, sorted({r[0] for r in session_rows})
+
+    def _resolve_session_names(by_cat_tier: dict[tuple[str, str], list[str]], by_cat: dict[str, list[str]], week_number: int, tokens: list[str]) -> list[str]:
+        tier = ["short", "medium", "long"][(week_number - 1) % 3]
+        names: list[str] = []
+        for token in tokens:
+            match = by_cat_tier.get((token, tier), [])
+            if not match:
+                match = by_cat.get(token, [])
+            names.append(match[0] if match else token)
+        return names
+
     with session_scope() as s:
         athletes = s.execute(select(Athlete.id, Athlete.first_name, Athlete.last_name)).all()
     if not athletes:
         st.warning("No athletes available yet. Add a client first.")
         return
     athlete_options = {f"{first} {last} (#{athlete_id})": athlete_id for athlete_id, first, last in athletes}
-    with st.form("plan_builder"):
-        athlete_label = st.selectbox("Athlete", list(athlete_options.keys()))
-        race_goal = st.selectbox("Race Goal", ["5K", "10K", "Half Marathon", "Marathon"])
-        weeks = st.selectbox("Plan Length (weeks)", [12, 24, 36, 48], index=1)
-        sessions_per_week = st.slider("Sessions / week", min_value=3, max_value=6, value=4)
-        max_session_min = st.slider("Max session minutes", min_value=60, max_value=240, value=140)
-        start_date = st.date_input("Start date", value=date.today())
-        submit = st.form_submit_button("Generate Plan")
-    if submit:
-        athlete_id = athlete_options[athlete_label]
-        rows = generate_plan_weeks(start_date, weeks, race_goal, sessions_per_week, max_session_min)
+    build_tab, manage_tab = st.tabs(["Build & Publish", "Manage Plan Weeks"])
 
-        def _resolve_session_names(s, week_number: int, tokens: list[str]) -> list[str]:
-            tier = ["short", "medium", "long"][(week_number - 1) % 3]
-            names: list[str] = []
-            for token in tokens:
-                row = s.execute(
-                    select(SessionLibrary.name).where(SessionLibrary.category == token, SessionLibrary.tier == tier).order_by(SessionLibrary.duration_min)
-                ).first()
-                if not row:
-                    row = s.execute(select(SessionLibrary.name).where(SessionLibrary.category == token).order_by(SessionLibrary.duration_min)).first()
-                names.append(row[0] if row else token)
+    with build_tab:
+        with st.form("plan_builder_preview"):
+            athlete_label = st.selectbox("Athlete", list(athlete_options.keys()))
+            race_goal = st.selectbox("Race Goal", ["5K", "10K", "Half Marathon", "Marathon"])
+            weeks = st.selectbox("Plan Length (weeks)", [12, 24, 36, 48], index=1)
+            sessions_per_week = st.slider("Sessions / week", min_value=3, max_value=6, value=4)
+            max_session_min = st.slider("Max session minutes", min_value=60, max_value=240, value=140)
+            start_date = st.date_input("Start date", value=date.today())
+            submit_preview = st.form_submit_button("Preview Plan")
 
-            return names
+        if submit_preview:
+            athlete_id = athlete_options[athlete_label]
+            week_rows = generate_plan_weeks(start_date, weeks, race_goal, sessions_per_week, max_session_min)
+            with session_scope() as s:
+                by_cat_tier, by_cat, _ = _load_session_catalog(s)
+            preview_weeks: list[dict] = []
+            preview_days: list[dict] = []
+            for row in week_rows:
+                resolved = _resolve_session_names(by_cat_tier, by_cat, row["week_number"], row["sessions_order"])
+                assignments = assign_week_sessions(row["week_start"], resolved)
+                preview_weeks.append(
+                    {
+                        "week_number": row["week_number"],
+                        "phase": row["phase"],
+                        "week_start": row["week_start"],
+                        "week_end": row["week_end"],
+                        "target_load": row["target_load"],
+                        "sessions_order": resolved,
+                        "assignments": assignments,
+                    }
+                )
+                for a in assignments:
+                    preview_days.append(
+                        {
+                            "week_number": row["week_number"],
+                            "session_day": a["session_day"],
+                            "session_name": a["session_name"],
+                            "phase": row["phase"],
+                        }
+                    )
+            st.session_state[preview_key] = {
+                "athlete_id": athlete_id,
+                "race_goal": race_goal,
+                "weeks": weeks,
+                "sessions_per_week": sessions_per_week,
+                "max_session_min": max_session_min,
+                "start_date": start_date,
+                "weeks_preview": preview_weeks,
+                "day_preview": preview_days,
+            }
+            st.rerun()
+
+        preview = st.session_state.get(preview_key)
+        if preview:
+            st.subheader("Plan Preview")
+            st.caption(
+                f"Athlete #{preview['athlete_id']} | {preview['race_goal']} | {preview['weeks']} weeks | "
+                f"{preview['sessions_per_week']} sessions/week"
+            )
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "week": w["week_number"],
+                            "phase": w["phase"],
+                            "week_start": w["week_start"],
+                            "week_end": w["week_end"],
+                            "target_load": w["target_load"],
+                            "sessions": " | ".join(w["sessions_order"]),
+                        }
+                        for w in preview["weeks_preview"]
+                    ]
+                ),
+                use_container_width=True,
+            )
+            st.dataframe(pd.DataFrame(preview["day_preview"]).sort_values(["session_day", "week_number"]), use_container_width=True)
+            col_publish, col_clear = st.columns(2)
+            if col_publish.button("Publish Plan", type="primary"):
+                with session_scope() as s:
+                    # Deactivate older active plans for same athlete and remove their future day sessions.
+                    active_plans = s.execute(select(Plan).where(Plan.athlete_id == preview["athlete_id"], Plan.status == "active")).scalars().all()
+                    for p in active_plans:
+                        p.status = "archived"
+                    future_rows = s.execute(
+                        select(PlanDaySession).where(PlanDaySession.athlete_id == preview["athlete_id"], PlanDaySession.session_day >= preview["start_date"])
+                    ).scalars().all()
+                    for row in future_rows:
+                        s.delete(row)
+
+                    plan = Plan(
+                        athlete_id=preview["athlete_id"],
+                        race_goal=preview["race_goal"],
+                        weeks=preview["weeks"],
+                        sessions_per_week=preview["sessions_per_week"],
+                        max_session_min=preview["max_session_min"],
+                        start_date=preview["start_date"],
+                        status="active",
+                    )
+                    s.add(plan)
+                    s.flush()
+                    for week in preview["weeks_preview"]:
+                        week_obj = PlanWeek(
+                            plan_id=plan.id,
+                            week_number=week["week_number"],
+                            phase=week["phase"],
+                            week_start=week["week_start"],
+                            week_end=week["week_end"],
+                            sessions_order=week["sessions_order"],
+                            target_load=week["target_load"],
+                            locked=False,
+                        )
+                        s.add(week_obj)
+                        s.flush()
+                        for assignment in week["assignments"]:
+                            s.add(
+                                PlanDaySession(
+                                    plan_week_id=week_obj.id,
+                                    athlete_id=preview["athlete_id"],
+                                    session_day=assignment["session_day"],
+                                    session_name=assignment["session_name"],
+                                    source_template_name=assignment["session_name"],
+                                    status="planned",
+                                )
+                            )
+                st.success("Plan published.")
+                st.session_state.pop(preview_key, None)
+                st.rerun()
+            if col_clear.button("Clear Preview"):
+                st.session_state.pop(preview_key, None)
+                st.rerun()
+
+    with manage_tab:
+        with session_scope() as s:
+            plan_rows = s.execute(
+                select(
+                    Plan.id,
+                    Plan.athlete_id,
+                    Athlete.first_name,
+                    Athlete.last_name,
+                    Plan.race_goal,
+                    Plan.weeks,
+                    Plan.sessions_per_week,
+                    Plan.start_date,
+                    Plan.status,
+                )
+                .join(Athlete, Athlete.id == Plan.athlete_id)
+                .where(Plan.status == "active")
+                .order_by(Plan.id.desc())
+            ).all()
+            by_cat_tier, by_cat, all_session_names = _load_session_catalog(s)
+        if not plan_rows:
+            st.info("No active plans to manage.")
+            return
+        plan_options = {
+            f"Plan #{pid} | {first} {last} | {goal} | {start_dt}": {
+                "id": pid,
+                "athlete_id": athlete_id,
+                "weeks": week_count,
+                "sessions_per_week": sessions_per_week,
+                "status": status,
+            }
+            for pid, athlete_id, first, last, goal, week_count, sessions_per_week, start_dt, status in plan_rows
+        }
+        plan_label = st.selectbox("Active Plan", list(plan_options.keys()))
+        plan_meta = plan_options[plan_label]
+        with session_scope() as s:
+            week_rows = s.execute(
+                select(PlanWeek.id, PlanWeek.week_number, PlanWeek.phase, PlanWeek.week_start, PlanWeek.week_end, PlanWeek.locked)
+                .where(PlanWeek.plan_id == plan_meta["id"])
+                .order_by(PlanWeek.week_number)
+            ).all()
+        if not week_rows:
+            st.info("No weeks found for the selected plan.")
+            return
+        week_options = {f"Week {week_number} | {phase} | {week_start}": (week_id, week_number, phase, week_start, week_end, locked) for week_id, week_number, phase, week_start, week_end, locked in week_rows}
+        week_label = st.selectbox("Week", list(week_options.keys()))
+        week_id, week_number, phase, week_start, week_end, week_locked = week_options[week_label]
+        st.caption(f"Locked: {week_locked}")
 
         with session_scope() as s:
-            plan = Plan(
-                athlete_id=athlete_id,
-                race_goal=race_goal,
-                weeks=weeks,
-                sessions_per_week=sessions_per_week,
-                max_session_min=max_session_min,
-                start_date=start_date,
-                status="active",
-            )
-            s.add(plan)
-            s.flush()
-            plan_weeks: list[PlanWeek] = []
-            for row in rows:
-                row_copy = dict(row)
-                row_copy["sessions_order"] = _resolve_session_names(s, row_copy["week_number"], row_copy["sessions_order"])
-                plan_weeks.append(PlanWeek(plan_id=plan.id, **row_copy))
-            s.add_all(plan_weeks)
-        st.success("Plan generated.")
-        st.rerun()
-
-    with session_scope() as s:
-        plan_rows = s.execute(
-            select(Plan.id, Plan.athlete_id, Plan.race_goal, Plan.weeks, Plan.start_date, Plan.status).order_by(Plan.id.desc())
-        ).all()
-    if plan_rows:
-        st.subheader("Recent Plans")
+            day_rows = s.execute(
+                select(PlanDaySession.id, PlanDaySession.session_day, PlanDaySession.session_name, PlanDaySession.status)
+                .where(PlanDaySession.plan_week_id == week_id)
+                .order_by(PlanDaySession.session_day)
+            ).all()
         st.dataframe(
-            pd.DataFrame(
-                [
-                    {"id": pid, "athlete_id": athlete_id, "goal": goal, "weeks": weeks, "start_date": start_dt, "status": status}
-                    for pid, athlete_id, goal, weeks, start_dt, status in plan_rows[:20]
-                ]
-            ),
+            pd.DataFrame([{"id": did, "session_day": day, "session_name": name, "status": status} for did, day, name, status in day_rows]),
             use_container_width=True,
         )
+        if not all_session_names:
+            st.warning("No session templates available. Add templates in Session Library first.")
+
+        col_a, col_b = st.columns(2)
+        with col_a:
+            with st.form("swap_day_session"):
+                if day_rows and all_session_names:
+                    day_options = {str(day): did for did, day, _name, _status in day_rows}
+                    day_label = st.selectbox("Day to swap", list(day_options.keys()))
+                    replacement = st.selectbox("Replacement session", all_session_names)
+                    submit_swap = st.form_submit_button("Swap Session")
+                else:
+                    day_label = None
+                    replacement = None
+                    submit_swap = st.form_submit_button("Swap Session", disabled=True)
+            if submit_swap:
+                if week_locked:
+                    st.error("Week is locked. Unlock before swapping.")
+                else:
+                    day_id = day_options[day_label]
+                    with session_scope() as s:
+                        row = s.get(PlanDaySession, day_id)
+                        if row:
+                            row.session_name = replacement
+                            row.source_template_name = replacement
+                            refreshed = s.execute(
+                                select(PlanDaySession.session_name).where(PlanDaySession.plan_week_id == week_id).order_by(PlanDaySession.session_day)
+                            ).all()
+                            week_obj = s.get(PlanWeek, week_id)
+                            week_obj.sessions_order = [name for (name,) in refreshed]
+                    st.success("Session swapped.")
+                    st.rerun()
+
+        with col_b:
+            if st.button("Lock / Unlock Week"):
+                with session_scope() as s:
+                    week_obj = s.get(PlanWeek, week_id)
+                    if week_obj:
+                        week_obj.locked = not week_obj.locked
+                st.success("Week lock state updated.")
+                st.rerun()
+
+            if st.button("Regenerate Week"):
+                if week_locked:
+                    st.error("Week is locked. Unlock before regenerating.")
+                elif not all_session_names:
+                    st.error("No session templates available to regenerate this week.")
+                else:
+                    sessions_tokens = default_phase_session_tokens(phase, int(plan_meta["sessions_per_week"]))
+                    resolved = _resolve_session_names(by_cat_tier, by_cat, week_number, sessions_tokens)
+                    assignments = assign_week_sessions(week_start, resolved)
+                    with session_scope() as s:
+                        existing = s.execute(select(PlanDaySession).where(PlanDaySession.plan_week_id == week_id)).scalars().all()
+                        for row in existing:
+                            s.delete(row)
+                        for a in assignments:
+                            s.add(
+                                PlanDaySession(
+                                    plan_week_id=week_id,
+                                    athlete_id=plan_meta["athlete_id"],
+                                    session_day=a["session_day"],
+                                    session_name=a["session_name"],
+                                    source_template_name=a["session_name"],
+                                    status="planned",
+                                )
+                            )
+                        week_obj = s.get(PlanWeek, week_id)
+                        if week_obj:
+                            week_obj.sessions_order = [a["session_name"] for a in assignments]
+                    st.success("Week regenerated.")
+                    st.rerun()
 
 
 def coach_session_library():
@@ -612,6 +834,13 @@ def athlete_dashboard(athlete_id: int):
                 Plan.athlete_id == athlete_id, Plan.status == "active", PlanWeek.week_start <= today, PlanWeek.week_end >= today
             )
         ).first()
+        planned_day_row = s.execute(
+            select(PlanDaySession.session_name)
+            .join(PlanWeek, PlanWeek.id == PlanDaySession.plan_week_id)
+            .join(Plan, Plan.id == PlanWeek.plan_id)
+            .where(PlanDaySession.athlete_id == athlete_id, PlanDaySession.session_day == today, Plan.status == "active")
+            .order_by(PlanDaySession.id.desc())
+        ).first()
         recent_logs = s.execute(select(TrainingLog.load_score, TrainingLog.pain_flag).where(TrainingLog.athlete_id == athlete_id, TrainingLog.date >= (today - timedelta(days=27)))).all()
         next_event = s.execute(select(Event.event_date).where(Event.athlete_id == athlete_id, Event.event_date >= today).order_by(Event.event_date)).first()
     st.subheader("1) Check-In")
@@ -635,7 +864,9 @@ def athlete_dashboard(athlete_id: int):
             f"HR: max {max_hr or 'n/a'}, resting {resting_hr or 'n/a'} | A:C ratio {ratio}"
         )
     session_token = None
-    if week_row and week_row[1]:
+    if planned_day_row:
+        session_token = planned_day_row[0]
+    elif week_row and week_row[1]:
         sessions_order = week_row[1]
         if isinstance(sessions_order, list) and sessions_order:
             session_token = sessions_order[today.weekday() % len(sessions_order)]
