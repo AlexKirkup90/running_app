@@ -821,28 +821,74 @@ def add_client():
         st.success(f"Created user: {username} / TempPass!234")
 
 
-def athlete_dashboard(athlete_id: int):
-    st.header("Today")
+def _get_today_context(athlete_id: int) -> dict:
+    today = date.today()
     with session_scope() as s:
-        today = date.today()
         checkin = s.execute(select(CheckIn.sleep, CheckIn.energy, CheckIn.recovery, CheckIn.stress).where(CheckIn.athlete_id == athlete_id, CheckIn.day == today)).first()
         athlete_profile = s.execute(
             select(Athlete.max_hr, Athlete.resting_hr, Athlete.threshold_pace_sec_per_km, Athlete.easy_pace_sec_per_km).where(Athlete.id == athlete_id)
+        ).first()
+        planned_day_row = s.execute(
+            select(PlanDaySession.id, PlanDaySession.session_name, PlanDaySession.status)
+            .join(PlanWeek, PlanWeek.id == PlanDaySession.plan_week_id)
+            .join(Plan, Plan.id == PlanWeek.plan_id)
+            .where(PlanDaySession.athlete_id == athlete_id, PlanDaySession.session_day == today, Plan.status == "active")
+            .order_by(PlanDaySession.id.desc())
         ).first()
         week_row = s.execute(
             select(PlanWeek.week_number, PlanWeek.sessions_order).join(Plan, Plan.id == PlanWeek.plan_id).where(
                 Plan.athlete_id == athlete_id, Plan.status == "active", PlanWeek.week_start <= today, PlanWeek.week_end >= today
             )
         ).first()
-        planned_day_row = s.execute(
-            select(PlanDaySession.session_name)
-            .join(PlanWeek, PlanWeek.id == PlanDaySession.plan_week_id)
-            .join(Plan, Plan.id == PlanWeek.plan_id)
-            .where(PlanDaySession.athlete_id == athlete_id, PlanDaySession.session_day == today, Plan.status == "active")
-            .order_by(PlanDaySession.id.desc())
+        today_log = s.execute(
+            select(
+                TrainingLog.id,
+                TrainingLog.session_category,
+                TrainingLog.duration_min,
+                TrainingLog.distance_km,
+                TrainingLog.avg_hr,
+                TrainingLog.max_hr,
+                TrainingLog.avg_pace_sec_per_km,
+                TrainingLog.rpe,
+                TrainingLog.notes,
+                TrainingLog.pain_flag,
+            )
+            .where(TrainingLog.athlete_id == athlete_id, TrainingLog.date == today)
+            .order_by(TrainingLog.id.desc())
         ).first()
         recent_logs = s.execute(select(TrainingLog.load_score, TrainingLog.pain_flag).where(TrainingLog.athlete_id == athlete_id, TrainingLog.date >= (today - timedelta(days=27)))).all()
         next_event = s.execute(select(Event.event_date).where(Event.athlete_id == athlete_id, Event.event_date >= today).order_by(Event.event_date)).first()
+
+    planned_session_name = None
+    planned_day_id = None
+    planned_status = None
+    if planned_day_row:
+        planned_day_id, planned_session_name, planned_status = planned_day_row
+    elif week_row and isinstance(week_row[1], list) and week_row[1]:
+        planned_session_name = week_row[1][today.weekday() % len(week_row[1])]
+
+    return {
+        "today": today,
+        "checkin": checkin,
+        "athlete_profile": athlete_profile,
+        "planned_day_id": planned_day_id,
+        "planned_session_name": planned_session_name,
+        "planned_status": planned_status,
+        "today_log": today_log,
+        "recent_logs": recent_logs,
+        "next_event": next_event,
+    }
+
+
+def athlete_dashboard(athlete_id: int):
+    st.header("Today")
+    ctx = _get_today_context(athlete_id)
+    today = ctx["today"]
+    checkin = ctx["checkin"]
+    athlete_profile = ctx["athlete_profile"]
+    recent_logs = ctx["recent_logs"]
+    next_event = ctx["next_event"]
+    today_log = ctx["today_log"]
     st.subheader("1) Check-In")
     readiness = None
     if checkin:
@@ -857,19 +903,14 @@ def athlete_dashboard(athlete_id: int):
     pain_recent = any(bool(pain) for _, pain in recent_logs[-3:])
     ratio = compute_acute_chronic_ratio(loads_28d)
     days_to_event = (next_event[0] - today).days if next_event else None
+    max_hr = resting_hr = threshold_pace = easy_pace = None
     if athlete_profile:
         max_hr, resting_hr, threshold_pace, easy_pace = athlete_profile
         st.caption(
             f"Pace anchors: threshold {pace_from_sec_per_km(threshold_pace)}, easy {pace_from_sec_per_km(easy_pace)} | "
             f"HR: max {max_hr or 'n/a'}, resting {resting_hr or 'n/a'} | A:C ratio {ratio}"
         )
-    session_token = None
-    if planned_day_row:
-        session_token = planned_day_row[0]
-    elif week_row and week_row[1]:
-        sessions_order = week_row[1]
-        if isinstance(sessions_order, list) and sessions_order:
-            session_token = sessions_order[today.weekday() % len(sessions_order)]
+    session_token = ctx["planned_session_name"]
     if not session_token:
         st.info("No planned session found for this week.")
     else:
@@ -915,7 +956,12 @@ def athlete_dashboard(athlete_id: int):
             if rows:
                 st.dataframe(pd.DataFrame(rows), use_container_width=True)
     st.subheader("3) Complete Session")
-    st.write("Log duration, distance, RPE, HR and notes.")
+    if not checkin:
+        st.warning("Complete Check-In first, then log your session.")
+    elif today_log:
+        st.success("Today's session is already logged. You can edit it in Log Session.")
+    else:
+        st.info("Go to Log Session to complete today's training.")
 
 
 def athlete_checkin(athlete_id: int):
@@ -931,45 +977,99 @@ def athlete_checkin(athlete_id: int):
         with session_scope() as s:
             existing = s.execute(select(CheckIn).where(CheckIn.athlete_id == athlete_id, CheckIn.day == date.today())).scalar_one_or_none()
             if existing:
-                st.warning("Already checked in today")
+                existing.sleep = sleep
+                existing.energy = energy
+                existing.recovery = recovery
+                existing.stress = stress
+                existing.training_today = training_today
+                st.success("Check-in updated")
             else:
                 s.add(CheckIn(athlete_id=athlete_id, day=date.today(), sleep=sleep, energy=energy, recovery=recovery, stress=stress, training_today=training_today))
                 st.success("Saved")
+        st.rerun()
 
 
 def athlete_log(athlete_id: int):
     st.header("Log Session")
+    ctx = _get_today_context(athlete_id)
+    if not ctx["checkin"]:
+        st.warning("You need to complete today's Check-In before logging a session.")
+        return
+    planned_session_name = ctx["planned_session_name"]
+    today_log = ctx["today_log"]
+    today = ctx["today"]
+
+    base_categories = [
+        "Easy Run",
+        "Long Run",
+        "Recovery Run",
+        "Tempo / Threshold",
+        "VO2 Intervals",
+        "Hill Repeats",
+        "Race Pace",
+        "Strides / Neuromuscular",
+        "Benchmark / Time Trial",
+        "Taper / Openers",
+        "Cross-Training Optional",
+    ]
+    options = [planned_session_name] + base_categories if planned_session_name else base_categories
+    seen = set()
+    category_options = []
+    for opt in options:
+        if opt and opt not in seen:
+            category_options.append(opt)
+            seen.add(opt)
+
+    default_category = today_log[1] if today_log else (planned_session_name or category_options[0])
     with st.form("log"):
-        category = st.selectbox("Session Type", ["Easy Run", "Long Run", "Recovery Run", "Tempo / Threshold", "VO2 Intervals", "Hill Repeats", "Race Pace", "Strides / Neuromuscular", "Benchmark / Time Trial", "Taper / Openers", "Cross-Training Optional"])
-        duration = st.number_input("Duration (min)", min_value=0, value=45)
-        distance = st.number_input("Distance (km)", min_value=0.0, value=8.0)
-        avg_hr = st.number_input("Avg HR (optional)", min_value=0, value=0)
-        max_hr = st.number_input("Max HR (optional)", min_value=0, value=0)
-        avg_pace = st.number_input("Avg pace sec/km (optional)", min_value=0.0, value=0.0)
-        rpe = st.slider("RPE", 1, 10, 5)
-        notes = st.text_area("Notes")
-        pain = st.checkbox("Pain flag", value=False)
-        submit = st.form_submit_button("Save")
+        category = st.selectbox("Session Type", category_options, index=category_options.index(default_category) if default_category in category_options else 0)
+        duration = st.number_input("Duration (min)", min_value=0, value=int(today_log[2]) if today_log else 45)
+        distance = st.number_input("Distance (km)", min_value=0.0, value=float(today_log[3]) if today_log else 8.0)
+        avg_hr = st.number_input("Avg HR (optional)", min_value=0, value=int(today_log[4]) if today_log and today_log[4] else 0)
+        max_hr = st.number_input("Max HR (optional)", min_value=0, value=int(today_log[5]) if today_log and today_log[5] else 0)
+        avg_pace = st.number_input("Avg pace sec/km (optional)", min_value=0.0, value=float(today_log[6]) if today_log and today_log[6] else 0.0)
+        rpe = st.slider("RPE", 1, 10, int(today_log[7]) if today_log else 5)
+        notes = st.text_area("Notes", value=str(today_log[8]) if today_log and today_log[8] else "")
+        pain = st.checkbox("Pain flag", value=bool(today_log[9]) if today_log else False)
+        submit = st.form_submit_button("Save Session")
     if submit:
         with session_scope() as s:
             load = float(duration) * (rpe / 10)
-            s.add(
-                TrainingLog(
-                    athlete_id=athlete_id,
-                    date=date.today(),
-                    session_category=category,
-                    duration_min=int(duration),
-                    distance_km=float(distance),
-                    avg_hr=(int(avg_hr) if avg_hr > 0 else None),
-                    max_hr=(int(max_hr) if max_hr > 0 else None),
-                    avg_pace_sec_per_km=(float(avg_pace) if avg_pace > 0 else None),
-                    rpe=rpe,
-                    load_score=load,
-                    notes=notes,
-                    pain_flag=pain,
+            existing = s.execute(select(TrainingLog).where(TrainingLog.athlete_id == athlete_id, TrainingLog.date == today)).scalar_one_or_none()
+            if existing:
+                existing.session_category = category
+                existing.duration_min = int(duration)
+                existing.distance_km = float(distance)
+                existing.avg_hr = int(avg_hr) if avg_hr > 0 else None
+                existing.max_hr = int(max_hr) if max_hr > 0 else None
+                existing.avg_pace_sec_per_km = float(avg_pace) if avg_pace > 0 else None
+                existing.rpe = rpe
+                existing.load_score = load
+                existing.notes = notes
+                existing.pain_flag = pain
+            else:
+                s.add(
+                    TrainingLog(
+                        athlete_id=athlete_id,
+                        date=today,
+                        session_category=category,
+                        duration_min=int(duration),
+                        distance_km=float(distance),
+                        avg_hr=(int(avg_hr) if avg_hr > 0 else None),
+                        max_hr=(int(max_hr) if max_hr > 0 else None),
+                        avg_pace_sec_per_km=(float(avg_pace) if avg_pace > 0 else None),
+                        rpe=rpe,
+                        load_score=load,
+                        notes=notes,
+                        pain_flag=pain,
+                    )
                 )
-            )
-            st.success("Logged")
+            if ctx["planned_day_id"]:
+                planned_row = s.get(PlanDaySession, int(ctx["planned_day_id"]))
+                if planned_row:
+                    planned_row.status = "completed"
+            st.success("Session saved for today.")
+        st.rerun()
 
 
 def athlete_analytics(athlete_id: int):

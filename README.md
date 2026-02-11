@@ -7,6 +7,7 @@ Production-ready Streamlit coaching platform for running (coach + athlete experi
 - Running-specific taxonomy and seeded library (120 structured sessions).
 - Canonical running session contract with warmup/main/cooldown blocks, pace/HR/RPE targets, and progression/regression rules.
 - Plan Builder v2 with preview-before-publish, persisted day-level sessions, and week management (swap/lock/regenerate).
+- Athlete Today flow enforcement: check-in -> adaptive session briefing -> single daily log (upsert) with planned-session completion tracking.
 - Plan generation (12/24/36/48 weeks), cutback weeks, phases (Base/Build/Peak/Taper/Recovery).
 - Recommendation engine with risk/confidence, explainable factors, guardrails, and automation modes.
 - Coach command center + athlete today-first flow.
