@@ -13,9 +13,11 @@ def main() -> int:
     with session_scope() as s:
         coach = s.execute(select(User).where(User.username == "coach")).scalar_one_or_none()
         athlete = s.execute(select(User).where(User.username == "athlete1")).scalar_one_or_none()
+        coach_hash = coach.password_hash if coach else ""
+        athlete_hash = athlete.password_hash if athlete else ""
 
-    coach_ok = bool(coach and verify_password("CoachPass!234", coach.password_hash))
-    athlete_ok = bool(athlete and verify_password("AthletePass!234", athlete.password_hash))
+    coach_ok = bool(coach and verify_password("CoachPass!234", coach_hash))
+    athlete_ok = bool(athlete and verify_password("AthletePass!234", athlete_hash))
 
     print(f"coach_exists={bool(coach)} coach_password_ok={coach_ok}")
     print(f"athlete1_exists={bool(athlete)} athlete1_password_ok={athlete_ok}")
