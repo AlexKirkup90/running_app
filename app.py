@@ -41,28 +41,28 @@ def auth_panel():
             if username == "athlete":
                 username = "athlete1"
 
-            def _get_user():
+            def _get_user_id() -> int | None:
                 with session_scope() as s:
-                    return s.execute(select(User).where(User.username == username)).scalar_one_or_none()
+                    return s.execute(select(User.id).where(User.username == username)).scalar_one_or_none()
 
             try:
-                user = _get_user()
+                user_id = _get_user_id()
             except Exception:
-                user = None
+                user_id = None
 
-            if not user:
+            if not user_id:
                 try:
                     ensure_demo_seeded()
-                    user = _get_user()
+                    user_id = _get_user_id()
                 except Exception:
-                    user = None
+                    user_id = None
 
-            if not user:
+            if not user_id:
                 st.error("Invalid credentials")
                 return
 
             with session_scope() as s:
-                user = s.get(User, user.id)
+                user = s.get(User, user_id)
                 if account_locked(user.locked_until):
                     st.error("Account locked")
                     return
