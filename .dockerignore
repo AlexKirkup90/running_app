@@ -1,0 +1,10 @@
+.git
+.github
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+.venv
+*.egg-info
+.streamlit/secrets.toml
+PROJECT_REVIEW_AND_ROADMAP.md
