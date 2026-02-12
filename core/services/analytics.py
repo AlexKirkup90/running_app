@@ -4,6 +4,10 @@ import pandas as pd
 
 
 def weekly_summary(logs_df: pd.DataFrame) -> pd.DataFrame:
+    """Aggregate training logs into weekly totals of duration, load, and session count.
+
+    Returns a DataFrame with columns: week, duration_min, load_score, sessions.
+    """
     if logs_df.empty:
         return pd.DataFrame(columns=["week", "duration_min", "load_score", "sessions"])
     d = logs_df.copy()

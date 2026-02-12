@@ -25,6 +25,7 @@ class AthleteSignals:
 
 
 def risk_priority(risk: float) -> str:
+    """Map a numeric risk score (0-1) to a priority label: 'high', 'medium', or 'low'."""
     if risk >= 0.75:
         return "high"
     if risk >= 0.5:
@@ -33,6 +34,10 @@ def risk_priority(risk: float) -> str:
 
 
 def derive_adherence(planned_sessions_14d: int, completed_sessions_14d: int, logged_sessions_14d: int) -> float:
+    """Compute a 14-day adherence ratio (0.0-1.0) from planned vs completed sessions.
+
+    Falls back to 1.0 if no plan exists but logs are present, or 0.5 if no data.
+    """
     if planned_sessions_14d > 0:
         return round(min(1.0, max(0.0, completed_sessions_14d / planned_sessions_14d)), 2)
     if logged_sessions_14d > 0:
@@ -41,6 +46,11 @@ def derive_adherence(planned_sessions_14d: int, completed_sessions_14d: int, log
 
 
 def compose_recommendation(signals: AthleteSignals) -> Recommendation:
+    """Build a coaching Recommendation from athlete signals, adjusting for pain flags.
+
+    Applies a risk uplift and potential action override when recent pain is detected.
+    Returns a Recommendation with guardrail checks applied.
+    """
     rec = generate_recommendation(
         readiness=signals.readiness,
         adherence=signals.adherence,
@@ -72,6 +82,10 @@ def compose_recommendation(signals: AthleteSignals) -> Recommendation:
 
 
 def collect_athlete_signals(s: Session, athlete_id: int, today: date) -> AthleteSignals:
+    """Query the database to gather readiness, adherence, and risk signals for one athlete.
+
+    Returns an AthleteSignals dataclass populated from check-ins, logs, events, and plan sessions.
+    """
     lookback_14d = today - timedelta(days=13)
     lookback_7d = today - timedelta(days=6)
 
@@ -218,6 +232,11 @@ def _sync_single_athlete(s: Session, athlete_id: int, today: date) -> dict[str, 
 
 
 def sync_interventions_queue(today: date | None = None) -> dict[str, int]:
+    """Refresh the coach intervention queue for all active athletes.
+
+    Creates, updates, or closes interventions based on current signals.
+    Returns a dict with counts: {'created', 'updated', 'closed'}.
+    """
     if today is None:
         today = date.today()
     summary = {"created": 0, "updated": 0, "closed": 0}

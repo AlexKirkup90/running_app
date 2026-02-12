@@ -15,6 +15,10 @@ class Recommendation:
 
 
 def generate_recommendation(readiness: float, adherence: float, days_since_log: int, days_to_event: int) -> Recommendation:
+    """Generate a coaching Recommendation based on athlete readiness, adherence, and event proximity.
+
+    Returns a Recommendation with action, risk/confidence scores, and guardrail status.
+    """
     factors: list[str] = []
     risk = 0.2
     conf = 0.75
@@ -53,6 +57,10 @@ def generate_recommendation(readiness: float, adherence: float, days_since_log: 
 
 
 def can_auto_apply(mode: str, low_risk_only: bool, confidence_min: float, risk_max: float, recommendation: Recommendation) -> bool:
+    """Determine whether a recommendation can be auto-applied given automation settings.
+
+    Checks guardrail status, mode constraints, and confidence/risk thresholds. Returns True if eligible.
+    """
     if not recommendation.guardrail_pass:
         return False
     if mode == "manual":

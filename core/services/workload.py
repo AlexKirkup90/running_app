@@ -19,10 +19,15 @@ class QueueSnapshot:
 
 
 def intervention_age_hours(created_at: datetime, now: datetime) -> float:
+    """Calculate the age of an intervention in hours from its creation time to now."""
     return round(max(0.0, (now - created_at).total_seconds() / 3600.0), 1)
 
 
 def queue_snapshot(rows: list[dict[str, Any]], now: datetime) -> QueueSnapshot:
+    """Build a QueueSnapshot summary from a list of open intervention dicts.
+
+    Computes counts (open, high-priority, actionable, snoozed), SLA buckets, and age statistics.
+    """
     ages = [intervention_age_hours(r["created_at"], now) for r in rows if isinstance(r.get("created_at"), datetime)]
 
     actionable = [r for r in rows if not bool(r.get("is_snoozed"))]

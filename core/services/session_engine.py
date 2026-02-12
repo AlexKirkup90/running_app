@@ -8,6 +8,10 @@ ZONE_ORDER = ["Z1", "Z2", "Z3", "Z4", "Z5"]
 
 
 def compute_acute_chronic_ratio(loads_28d: list[float]) -> float:
+    """Compute the acute-to-chronic workload ratio from up to 28 days of load values.
+
+    Compares the most recent 7-day average against the preceding baseline. Returns 1.0 if data is empty.
+    """
     if not loads_28d:
         return 1.0
     recent = sum(loads_28d[-7:])
@@ -19,6 +23,7 @@ def compute_acute_chronic_ratio(loads_28d: list[float]) -> float:
 
 
 def pace_from_sec_per_km(sec: int | None) -> str:
+    """Convert seconds-per-kilometre to a 'M:SS/km' display string. Returns 'n/a' for invalid input."""
     if not sec or sec <= 0:
         return "n/a"
     mins = sec // 60
@@ -44,6 +49,10 @@ def _pace_sec_for_zone(zone: str, threshold_pace_sec_per_km: int | None, easy_pa
 
 
 def pace_range_for_label(label: str, threshold_pace_sec_per_km: int | None, easy_pace_sec_per_km: int | None) -> str:
+    """Derive a human-readable pace range string for a zone label given threshold and easy paces.
+
+    Returns a single pace or a 'lo - hi' range, or 'n/a' if zones cannot be resolved.
+    """
     zones = _zones_from_label(label)
     if not zones:
         return "n/a"
@@ -55,6 +64,10 @@ def pace_range_for_label(label: str, threshold_pace_sec_per_km: int | None, easy
 
 
 def hr_zone_bounds(max_hr: int | None, resting_hr: int | None) -> dict[str, tuple[int, int]]:
+    """Calculate heart-rate zone boundaries (Z1-Z5) using the Karvonen heart-rate reserve method.
+
+    Returns a dict mapping zone labels to (low_bpm, high_bpm) tuples, or empty dict if inputs are invalid.
+    """
     if not max_hr or not resting_hr or max_hr <= resting_hr:
         return {}
     hrr = max_hr - resting_hr
@@ -68,6 +81,7 @@ def hr_zone_bounds(max_hr: int | None, resting_hr: int | None) -> dict[str, tupl
 
 
 def hr_range_for_label(label: str, max_hr: int | None, resting_hr: int | None) -> str:
+    """Return a 'lo-hi bpm' heart-rate range string for a zone label. Returns 'n/a' if unresolvable."""
     zones = _zones_from_label(label)
     bounds = hr_zone_bounds(max_hr, resting_hr)
     if not zones or not bounds:
@@ -99,6 +113,10 @@ def adapt_session_structure(
     acute_chronic_ratio: float,
     days_to_event: int | None,
 ) -> dict[str, Any]:
+    """Adapt a session structure based on readiness, pain, workload ratio, and event proximity.
+
+    Returns a dict with keys: action ('keep'|'downshift'|'taper'|'progress'), reason, and the adjusted session.
+    """
     session = deepcopy(structure_json or {})
     blocks = session.get("blocks", [])
     action = "keep"

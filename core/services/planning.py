@@ -30,6 +30,10 @@ def _phase_for_week(week: int, total: int) -> str:
 
 
 def default_phase_session_tokens(phase: str, sessions_per_week: int) -> list[str]:
+    """Return the default ordered list of session-type tokens for a training phase.
+
+    Truncates the phase template to sessions_per_week entries.
+    """
     phase_templates = {
         "Base": ["Easy Run", "Long Run", "Strides / Neuromuscular", "Recovery Run", "Easy Run", "Cross-Training Optional"],
         "Build": ["Tempo / Threshold", "VO2 Intervals", "Long Run", "Easy Run", "Hill Repeats", "Recovery Run"],
@@ -42,6 +46,10 @@ def default_phase_session_tokens(phase: str, sessions_per_week: int) -> list[str
 
 
 def assign_week_sessions(week_start: date, session_names: list[str]) -> list[dict]:
+    """Assign session names to specific calendar days within a training week.
+
+    Returns a list of dicts with keys: session_day (date), session_name (str).
+    """
     assignments: list[dict] = []
     for idx, session_name in enumerate(session_names):
         offset = SESSION_DAY_OFFSETS[idx % len(SESSION_DAY_OFFSETS)]
@@ -50,6 +58,10 @@ def assign_week_sessions(week_start: date, session_names: list[str]) -> list[dic
 
 
 def generate_plan_weeks(start_date: date, weeks: int, race_goal: str, sessions_per_week: int = 4, max_session_min: int = 120) -> list[dict]:
+    """Generate a multi-week training plan with phased periodization for a given race goal.
+
+    Returns a list of week dicts containing phase, target load, and session order.
+    """
     target_lr = RACE_LONG_RUN_TARGET[race_goal]
     rows: list[dict] = []
     for wk in range(1, weeks + 1):
