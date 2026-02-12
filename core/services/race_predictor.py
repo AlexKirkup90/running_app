@@ -132,13 +132,31 @@ def predict_race(
 def predict_all_distances(
     known_distance_label: str,
     known_time_seconds: float,
+    vdot_override: int | None = None,
 ) -> dict[str, list[RacePrediction]]:
-    """Predict times for all standard distances from a single race result."""
+    """Predict times for all standard distances from a single race result.
+
+    If vdot_override is provided, uses that VDOT directly instead of
+    estimating from the known result (useful when only VDOT is available).
+    """
     results: dict[str, list[RacePrediction]] = {}
     for target_label in RACE_DISTANCES_M:
         if target_label == known_distance_label:
             continue
-        preds = predict_race(known_distance_label, known_time_seconds, target_label)
-        if preds:
-            results[target_label] = preds
+        if vdot_override and known_time_seconds <= 0:
+            # VDOT-only mode: skip Riegel, use VDOT prediction directly
+            target_m = RACE_DISTANCES_M[target_label]
+            vdot_secs = predict_vdot(vdot_override, target_m)
+            results[target_label] = [RacePrediction(
+                distance_label=target_label,
+                distance_m=target_m,
+                predicted_seconds=vdot_secs,
+                predicted_display=_format_time(vdot_secs),
+                method="vdot",
+                vdot_used=vdot_override,
+            )]
+        else:
+            preds = predict_race(known_distance_label, known_time_seconds, target_label)
+            if preds:
+                results[target_label] = preds
     return results
