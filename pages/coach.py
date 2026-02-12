@@ -1206,14 +1206,51 @@ def coach_session_library() -> None:
 
 def coach_portfolio_analytics() -> None:
     st.header("Portfolio Analytics")
+    from core.services.analytics import compute_fitness_fatigue, compute_intensity_distribution, race_readiness_score
+
     with session_scope() as s:
-        rows = s.execute(select(TrainingLog.athlete_id, TrainingLog.date, TrainingLog.duration_min, TrainingLog.load_score)).all()
+        rows = s.execute(
+            select(TrainingLog.athlete_id, TrainingLog.date, TrainingLog.duration_min, TrainingLog.load_score, TrainingLog.rpe)
+        ).all()
+        athletes = {aid: f"{first} {last}" for aid, first, last in s.execute(select(Athlete.id, Athlete.first_name, Athlete.last_name)).all()}
     if not rows:
         st.info("No training logs available yet.")
         return
-    df = pd.DataFrame([{"athlete_id": athlete_id, "date": d, "duration_min": mins, "load_score": load} for athlete_id, d, mins, load in rows])
-    summary = df.groupby("athlete_id", as_index=False).agg(total_sessions=("athlete_id", "count"), total_minutes=("duration_min", "sum"), total_load=("load_score", "sum"))
-    st.dataframe(summary.sort_values("total_load", ascending=False), use_container_width=True)
+
+    df = pd.DataFrame([{"athlete_id": aid, "date": d, "duration_min": mins, "load_score": load, "rpe": rpe} for aid, d, mins, load, rpe in rows])
+
+    # Portfolio summary
+    summary = df.groupby("athlete_id", as_index=False).agg(
+        total_sessions=("athlete_id", "count"),
+        total_minutes=("duration_min", "sum"),
+        total_load=("load_score", "sum"),
+    )
+    summary["athlete"] = summary["athlete_id"].map(athletes)
+    st.dataframe(summary[["athlete", "athlete_id", "total_sessions", "total_minutes", "total_load"]].sort_values("total_load", ascending=False), use_container_width=True)
+
+    # Per-athlete fitness/fatigue overview
+    st.subheader("Athlete Fitness Overview")
+    overview_rows = []
+    for aid in df["athlete_id"].unique():
+        athlete_df = df[df["athlete_id"] == aid].sort_values("date")
+        daily_loads = [{"date": row["date"], "load": float(row["load_score"] or 0)} for _, row in athlete_df.iterrows()]
+        ff = compute_fitness_fatigue(daily_loads)
+        if ff:
+            latest = ff[-1]
+            readiness = race_readiness_score(latest.tsb)
+            log_dicts = [{"duration_min": row["duration_min"], "rpe": row["rpe"]} for _, row in athlete_df.iterrows()]
+            intensity = compute_intensity_distribution(log_dicts)
+            overview_rows.append({
+                "athlete": athletes.get(aid, f"#{aid}"),
+                "CTL": latest.ctl,
+                "ATL": latest.atl,
+                "TSB": latest.tsb,
+                "readiness": readiness.replace("_", " ").title(),
+                "easy_%": intensity.get("easy", 0),
+                "hard_%": intensity.get("hard", 0),
+            })
+    if overview_rows:
+        st.dataframe(pd.DataFrame(overview_rows), use_container_width=True)
 
 
 def coach_integrations() -> None:

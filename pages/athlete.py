@@ -374,14 +374,121 @@ def athlete_log(athlete_id: int) -> None:
 def athlete_analytics(athlete_id: int) -> None:
     st.header("Analytics")
     with session_scope() as s:
-        logs = s.execute(select(TrainingLog.id, TrainingLog.date, TrainingLog.duration_min, TrainingLog.load_score).where(TrainingLog.athlete_id == athlete_id)).all()
+        logs = s.execute(
+            select(
+                TrainingLog.id, TrainingLog.date, TrainingLog.duration_min, TrainingLog.load_score,
+                TrainingLog.session_category, TrainingLog.rpe, TrainingLog.avg_pace_sec_per_km,
+                TrainingLog.distance_km, TrainingLog.avg_hr, TrainingLog.pain_flag,
+            ).where(TrainingLog.athlete_id == athlete_id).order_by(TrainingLog.date)
+        ).all()
         events = s.execute(select(Event.event_date).where(Event.athlete_id == athlete_id)).all()
+        vdot_score = s.execute(select(Athlete.vdot_score).where(Athlete.id == athlete_id)).scalar()
+        # Benchmark/race results for VDOT history
+        benchmarks = s.execute(
+            select(TrainingLog.date, TrainingLog.distance_km, TrainingLog.duration_min, TrainingLog.session_category)
+            .where(
+                TrainingLog.athlete_id == athlete_id,
+                TrainingLog.distance_km > 0,
+                TrainingLog.duration_min > 0,
+                TrainingLog.session_category.in_(["Benchmark / Time Trial", "Race Pace Run", "Race Pace"]),
+            ).order_by(TrainingLog.date)
+        ).all()
+
     if not logs:
         st.info("No logs yet")
         return
-    df = pd.DataFrame([{"id": log_id, "date": log_date, "duration_min": duration_min, "load_score": load_score} for log_id, log_date, duration_min, load_score in logs])
+
+    from core.services.analytics import (
+        compute_fitness_fatigue,
+        compute_intensity_distribution,
+        compute_pace_trends,
+        compute_vdot_history,
+        compute_volume_distribution,
+        race_readiness_score,
+        vdot_trend,
+    )
+
+    log_dicts = [
+        {
+            "id": lid, "date": d, "duration_min": dur, "load_score": load,
+            "session_category": cat, "rpe": rpe, "avg_pace_sec_per_km": pace,
+            "distance_km": dist, "avg_hr": hr, "pain_flag": pain,
+        }
+        for lid, d, dur, load, cat, rpe, pace, dist, hr, pain in logs
+    ]
+
+    # Weekly summary
+    df = pd.DataFrame(log_dicts)
     w = weekly_summary(df)
-    st.line_chart(w.set_index("week")["duration_min"])
+    st.subheader("Weekly Volume")
+    st.line_chart(w.set_index("week")[["duration_min", "load_score"]])
+
+    # Fitness / Fatigue (CTL / ATL / TSB)
+    st.subheader("Fitness & Fatigue")
+    daily_loads = [{"date": log["date"], "load": float(log["load_score"] or 0)} for log in log_dicts]
+    ff_points = compute_fitness_fatigue(daily_loads)
+    if ff_points:
+        ff_df = pd.DataFrame([{"date": p.day, "CTL (Fitness)": p.ctl, "ATL (Fatigue)": p.atl, "TSB (Form)": p.tsb} for p in ff_points])
+        st.line_chart(ff_df.set_index("date"))
+        latest = ff_points[-1]
+        readiness = race_readiness_score(latest.tsb)
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Fitness (CTL)", f"{latest.ctl:.0f}")
+        c2.metric("Fatigue (ATL)", f"{latest.atl:.0f}")
+        c3.metric("Form (TSB)", f"{latest.tsb:.0f}")
+        c4.metric("Race Readiness", readiness.replace("_", " ").title())
+
+    # VDOT progression
+    if benchmarks:
+        st.subheader("VDOT Progression")
+        bench_dicts = [{"date": d, "distance_km": dist, "duration_min": dur, "source": cat} for d, dist, dur, cat in benchmarks]
+        vdot_history = compute_vdot_history(bench_dicts)
+        if vdot_history:
+            trend_info = vdot_trend(vdot_history)
+            st.caption(
+                f"Current VDOT: {trend_info['current_vdot']} | "
+                f"Peak: {trend_info['peak_vdot']} | "
+                f"Trend: {trend_info['trend']} | "
+                f"Rate: {trend_info['improvement_per_month']:+.1f}/month"
+            )
+            vdot_df = pd.DataFrame([{"date": p.event_date, "VDOT": p.vdot} for p in vdot_history])
+            st.line_chart(vdot_df.set_index("date"))
+    elif vdot_score:
+        st.subheader("VDOT")
+        st.metric("Current VDOT", vdot_score)
+        st.caption("Log benchmark / time trial sessions to track VDOT progression over time.")
+
+    # Intensity distribution (80/20 rule check)
+    st.subheader("Intensity Distribution")
+    intensity = compute_intensity_distribution(log_dicts)
+    if intensity:
+        ic1, ic2, ic3 = st.columns(3)
+        ic1.metric("Easy (RPE 1-4)", f"{intensity['easy']}%")
+        ic2.metric("Moderate (RPE 5-7)", f"{intensity['moderate']}%")
+        ic3.metric("Hard (RPE 8-10)", f"{intensity['hard']}%")
+        ideal_easy = intensity["easy"] >= 75
+        if ideal_easy:
+            st.success("Good polarisation — majority of training is easy.")
+        elif intensity["easy"] >= 60:
+            st.info("Moderate polarisation. Consider increasing easy volume for better recovery.")
+        else:
+            st.warning("Low easy percentage. Risk of overtraining — increase easy volume.")
+
+    # Volume distribution
+    st.subheader("Volume by Session Type")
+    vol = compute_volume_distribution(log_dicts)
+    if vol:
+        st.bar_chart(pd.DataFrame({"category": list(vol.keys()), "percentage": list(vol.values())}).set_index("category"))
+
+    # Pace trends
+    pace_df = compute_pace_trends(log_dicts)
+    if not pace_df.empty:
+        st.subheader("Pace Trends")
+        for cat in pace_df["category"].unique():
+            cat_data = pace_df[pace_df["category"] == cat][["date", "rolling_avg_pace"]].copy()
+            cat_data = cat_data.rename(columns={"rolling_avg_pace": f"{cat} (sec/km)"})
+            st.line_chart(cat_data.set_index("date"))
+
     if events:
         st.write("Next event in days:", min((event_date - date.today()).days for (event_date,) in events))
 
