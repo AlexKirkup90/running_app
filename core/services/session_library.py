@@ -10,6 +10,7 @@ ZONE_TOKEN = re.compile(r"Z[1-5]")
 
 
 def valid_zone_label(label: str) -> bool:
+    """Check whether a zone label is valid (a recognised special label or contains Z1-Z5 tokens)."""
     text = (label or "").strip()
     if not text:
         return False
@@ -20,6 +21,10 @@ def valid_zone_label(label: str) -> bool:
 
 
 def default_structure(duration_min: int) -> dict[str, Any]:
+    """Build a default session structure (warmup, main_set, cooldown) for a given duration.
+
+    Returns a versioned dict with a blocks list containing phase, duration, instructions, and targets.
+    """
     total = max(20, int(duration_min))
     warmup = max(10, total // 5)
     cooldown = 8 if total >= 45 else 6
@@ -50,6 +55,7 @@ def default_structure(duration_min: int) -> dict[str, Any]:
 
 
 def default_targets() -> dict[str, Any]:
+    """Return default primary and secondary target dicts for a session (pace zone, HR zone, RPE, cadence)."""
     return {
         "primary": {"pace_zone": "Z2", "hr_zone": "Z2", "rpe_range": [3, 4]},
         "secondary": {"cadence_spm": [168, 182], "terrain": "flat_or_rolling"},
@@ -57,6 +63,7 @@ def default_targets() -> dict[str, Any]:
 
 
 def default_progression() -> dict[str, str]:
+    """Return default progression rules describing when and how to increase session difficulty."""
     return {
         "increase_one": "Add 5-10 min if readiness remains >= 3.5.",
         "increase_two": "Add one repeat in the main set when quality remains stable.",
@@ -64,6 +71,7 @@ def default_progression() -> dict[str, str]:
 
 
 def default_regression() -> dict[str, str]:
+    """Return default regression rules describing when and how to reduce session difficulty."""
     return {
         "reduce_one": "Reduce main-set volume by 15-20% on low readiness.",
         "reduce_two": "Swap to easy aerobic run when pain flag is present.",
@@ -84,6 +92,10 @@ def _validate_rpe_range(value: Any, location: str, errors: list[str]) -> None:
 
 
 def validate_structure_contract(structure_json: dict[str, Any], duration_min: int) -> list[str]:
+    """Validate a session structure dict against the required contract (phases, targets, duration bounds).
+
+    Returns a list of human-readable error strings; an empty list means the structure is valid.
+    """
     errors: list[str] = []
     if not isinstance(structure_json, dict):
         return ["structure_json must be an object"]
@@ -139,6 +151,10 @@ def validate_structure_contract(structure_json: dict[str, Any], duration_min: in
 
 
 def validate_session_payload(payload: dict[str, Any]) -> list[str]:
+    """Validate a complete session creation payload including metadata, targets, and structure.
+
+    Returns a list of error strings; an empty list means the payload is valid.
+    """
     errors: list[str] = []
     for field in ["name", "category", "intent", "energy_system", "tier", "prescription", "coaching_notes"]:
         val = str(payload.get(field, "")).strip()

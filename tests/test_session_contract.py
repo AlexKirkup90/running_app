@@ -2,8 +2,8 @@ from db.seed import build_session_contract
 
 
 def test_session_contract_contains_required_sections():
-    contract = build_session_contract("Tempo / Threshold", 55, "outdoor", "medium")
-    assert contract["intent"] == "threshold"
+    contract = build_session_contract("Tempo Run", 55, "outdoor", "medium")
+    assert contract["intent"] == "lactate_threshold"
     assert contract["energy_system"] == "lactate_threshold"
     assert "structure_json" in contract
     assert "targets_json" in contract
@@ -14,9 +14,9 @@ def test_session_contract_contains_required_sections():
     assert [b["phase"] for b in blocks] == ["warmup", "main_set", "cooldown"]
 
 
-def test_session_contract_targets_include_hr_and_pace():
-    contract = build_session_contract("VO2 Intervals", 45, "treadmill", "long")
+def test_session_contract_targets_include_pace_label():
+    contract = build_session_contract("VO2max Intervals", 45, "treadmill", "long")
     primary = contract["targets_json"]["primary"]
-    assert "pace_zone" in primary
-    assert "hr_zone" in primary
+    assert "pace_label" in primary
+    assert primary["pace_label"] == "I"
     assert "rpe_range" in primary

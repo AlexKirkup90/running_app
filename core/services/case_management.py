@@ -5,6 +5,10 @@ from typing import Any
 
 
 def athlete_risk_bucket(readiness: float, adherence: float) -> str:
+    """Classify an athlete into a risk bucket based on readiness and adherence.
+
+    Returns 'at-risk', 'watch', or 'stable'.
+    """
     if readiness < 3 or adherence < 0.7:
         return "at-risk"
     if readiness < 3.5:
@@ -27,6 +31,11 @@ def build_case_timeline(
     events: list[dict[str, Any]],
     notes_tasks: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
+    """Merge multiple data sources into a single reverse-chronological timeline.
+
+    Each entry dict contains keys: when, source, title, detail.
+    Returns the merged list sorted newest-first.
+    """
     timeline: list[dict[str, Any]] = []
 
     for row in coach_actions:

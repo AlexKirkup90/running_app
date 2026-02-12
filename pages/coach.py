@@ -37,6 +37,8 @@ from core.services.session_library import (
     default_targets,
     validate_session_payload,
 )
+from core.services.plan_adjuster import assess_adherence_trend, detect_pain_cluster, recommend_adjustments
+from core.services.training_load import compute_session_load, compute_weekly_metrics, overtraining_risk
 from core.services.workload import queue_snapshot
 
 logger = logging.getLogger(__name__)
@@ -563,7 +565,21 @@ def coach_command_center() -> None:
                 st.dataframe(timeline_df, use_container_width=True)
 
         with context_tab:
+            # Training load analysis
             if recent_logs:
+                st.subheader("Training Load Analysis")
+                daily_loads = []
+                for d, category, duration, rpe, pain_flag, load_score in recent_logs:
+                    sl = compute_session_load(int(duration or 0), int(rpe or 5))
+                    daily_loads.append(sl.trimp)
+                if len(daily_loads) >= 7:
+                    weekly = compute_weekly_metrics(daily_loads)
+                    risk = overtraining_risk(weekly.monotony, weekly.strain)
+                    lc1, lc2, lc3 = st.columns(3)
+                    lc1.metric("Monotony", f"{weekly.monotony:.2f}")
+                    lc2.metric("Strain", f"{weekly.strain:.0f}")
+                    lc3.metric("Overtraining Risk", risk.upper())
+
                 st.subheader("Recent Training Logs")
                 st.dataframe(
                     pd.DataFrame(
@@ -583,6 +599,36 @@ def coach_command_center() -> None:
                 )
             else:
                 st.info("No recent training logs.")
+
+            # Plan adjuster recommendations
+            if recent_logs:
+                st.subheader("Plan Adjustment Recommendations")
+                log_dicts = [
+                    {"date": d, "duration_min": duration, "rpe": rpe, "pain_flag": pain_flag, "load_score": load_score}
+                    for d, category, duration, rpe, pain_flag, load_score in recent_logs
+                ]
+                with session_scope() as s:
+                    plan_weeks = s.execute(
+                        select(PlanWeek.week_number, PlanWeek.target_load, PlanWeek.week_start, PlanWeek.week_end)
+                        .join(Plan, Plan.id == PlanWeek.plan_id)
+                        .where(Plan.athlete_id == athlete_id, Plan.status == "active")
+                        .order_by(PlanWeek.week_number)
+                    ).all()
+                if plan_weeks:
+                    plan_week_dicts = [
+                        {"week_number": wn, "target_load": tl, "week_start": ws, "week_end": we}
+                        for wn, tl, ws, we in plan_weeks
+                    ]
+                    adherence = assess_adherence_trend(log_dicts, plan_week_dicts)
+                    pain_cluster = detect_pain_cluster(log_dicts)
+                    recommendations = recommend_adjustments(adherence, pain_cluster)
+                    if recommendations:
+                        for rec in recommendations:
+                            st.warning(f"**{rec['action']}**: {rec['reason']}")
+                    else:
+                        st.success("No plan adjustments recommended. Athlete is on track.")
+                else:
+                    st.info("No active plan to analyse.")
 
             if recent_checkins:
                 st.subheader("Recent Check-Ins")
@@ -796,6 +842,7 @@ def coach_plan_builder() -> None:
             f"Plan #{pid} | {first} {last} | {goal} | {start_dt}": {
                 "id": pid,
                 "athlete_id": athlete_id,
+                "race_goal": goal,
                 "weeks": week_count,
                 "sessions_per_week": sessions_per_week,
                 "status": status,
@@ -876,7 +923,7 @@ def coach_plan_builder() -> None:
                 elif not all_session_names:
                     st.error("No session templates available to regenerate this week.")
                 else:
-                    sessions_tokens = default_phase_session_tokens(phase, int(plan_meta["sessions_per_week"]))
+                    sessions_tokens = default_phase_session_tokens(phase, int(plan_meta["sessions_per_week"]), race_goal=plan_meta.get("race_goal"))
                     resolved = _resolve_session_names(by_cat_tier, by_cat, week_number, sessions_tokens)
                     assignments = assign_week_sessions(week_start, resolved)
                     with session_scope() as s:
@@ -1159,14 +1206,51 @@ def coach_session_library() -> None:
 
 def coach_portfolio_analytics() -> None:
     st.header("Portfolio Analytics")
+    from core.services.analytics import compute_fitness_fatigue, compute_intensity_distribution, race_readiness_score
+
     with session_scope() as s:
-        rows = s.execute(select(TrainingLog.athlete_id, TrainingLog.date, TrainingLog.duration_min, TrainingLog.load_score)).all()
+        rows = s.execute(
+            select(TrainingLog.athlete_id, TrainingLog.date, TrainingLog.duration_min, TrainingLog.load_score, TrainingLog.rpe)
+        ).all()
+        athletes = {aid: f"{first} {last}" for aid, first, last in s.execute(select(Athlete.id, Athlete.first_name, Athlete.last_name)).all()}
     if not rows:
         st.info("No training logs available yet.")
         return
-    df = pd.DataFrame([{"athlete_id": athlete_id, "date": d, "duration_min": mins, "load_score": load} for athlete_id, d, mins, load in rows])
-    summary = df.groupby("athlete_id", as_index=False).agg(total_sessions=("athlete_id", "count"), total_minutes=("duration_min", "sum"), total_load=("load_score", "sum"))
-    st.dataframe(summary.sort_values("total_load", ascending=False), use_container_width=True)
+
+    df = pd.DataFrame([{"athlete_id": aid, "date": d, "duration_min": mins, "load_score": load, "rpe": rpe} for aid, d, mins, load, rpe in rows])
+
+    # Portfolio summary
+    summary = df.groupby("athlete_id", as_index=False).agg(
+        total_sessions=("athlete_id", "count"),
+        total_minutes=("duration_min", "sum"),
+        total_load=("load_score", "sum"),
+    )
+    summary["athlete"] = summary["athlete_id"].map(athletes)
+    st.dataframe(summary[["athlete", "athlete_id", "total_sessions", "total_minutes", "total_load"]].sort_values("total_load", ascending=False), use_container_width=True)
+
+    # Per-athlete fitness/fatigue overview
+    st.subheader("Athlete Fitness Overview")
+    overview_rows = []
+    for aid in df["athlete_id"].unique():
+        athlete_df = df[df["athlete_id"] == aid].sort_values("date")
+        daily_loads = [{"date": row["date"], "load": float(row["load_score"] or 0)} for _, row in athlete_df.iterrows()]
+        ff = compute_fitness_fatigue(daily_loads)
+        if ff:
+            latest = ff[-1]
+            readiness = race_readiness_score(latest.tsb)
+            log_dicts = [{"duration_min": row["duration_min"], "rpe": row["rpe"]} for _, row in athlete_df.iterrows()]
+            intensity = compute_intensity_distribution(log_dicts)
+            overview_rows.append({
+                "athlete": athletes.get(aid, f"#{aid}"),
+                "CTL": latest.ctl,
+                "ATL": latest.atl,
+                "TSB": latest.tsb,
+                "readiness": readiness.replace("_", " ").title(),
+                "easy_%": intensity.get("easy", 0),
+                "hard_%": intensity.get("hard", 0),
+            })
+    if overview_rows:
+        st.dataframe(pd.DataFrame(overview_rows), use_container_width=True)
 
 
 def coach_integrations() -> None:
