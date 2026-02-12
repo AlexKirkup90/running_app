@@ -132,6 +132,7 @@ def pace_range_display(lo: int, hi: int) -> str:
 
 # Standard race distances in metres
 RACE_DISTANCES_M = {
+    "800m": 800,
     "1500m": 1500,
     "Mile": 1609.34,
     "3K": 3000,

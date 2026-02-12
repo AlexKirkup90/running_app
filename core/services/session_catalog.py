@@ -464,8 +464,9 @@ _reg(WorkoutType(
 ))
 
 
-# ── Phase Templates (Daniels-informed) ───────────────────────────────────
+# ── Phase Templates (Daniels-informed, distance-specific) ────────────────
 
+# Generic fallback templates (used when race_goal is not recognised)
 PHASE_TEMPLATES: dict[str, list[str]] = {
     "Base": [
         "Easy Run", "Long Run", "Strides", "Recovery Run",
@@ -489,10 +490,186 @@ PHASE_TEMPLATES: dict[str, list[str]] = {
     ],
 }
 
+# Distance-specific templates keyed by race goal.
+# Session order is priority-ranked: first sessions are most important when
+# sessions_per_week is lower than the full template length.
 
-def get_phase_sessions(phase: str, sessions_per_week: int) -> list[str]:
-    """Return the Daniels-informed session sequence for a phase, capped at sessions_per_week."""
-    template = PHASE_TEMPLATES.get(phase, PHASE_TEMPLATES["Base"])
+DISTANCE_PHASE_TEMPLATES: dict[str, dict[str, list[str]]] = {
+    # --- Middle distance (800m / 1500m / Mile) ---
+    # Emphasis: VO2max and R-pace economy; shorter long runs; minimal marathon work
+    "800m": {
+        "Base": [
+            "Easy Run", "Strides", "Hill Repeats", "Long Run",
+            "Recovery Run", "Fartlek", "Cross-Training",
+        ],
+        "Build": [
+            "VO2max Short Intervals", "Repetitions", "Tempo Run",
+            "Easy Run", "Hill Repeats", "Strides", "Recovery Run",
+        ],
+        "Peak": [
+            "Repetitions", "VO2max Short Intervals", "Race Pace Run",
+            "Easy Run", "Strides", "Recovery Run", "Cross-Training",
+        ],
+        "Taper": [
+            "Taper / Openers", "Strides", "Easy Run",
+            "Recovery Run", "Cross-Training", "Easy Run", "Recovery Run",
+        ],
+        "Recovery": PHASE_TEMPLATES["Recovery"],
+    },
+    "1500m": {
+        "Base": [
+            "Easy Run", "Strides", "Hill Repeats", "Long Run",
+            "Recovery Run", "Fartlek", "Cross-Training",
+        ],
+        "Build": [
+            "VO2max Intervals", "Repetitions", "Tempo Run",
+            "Easy Run", "Hill Repeats", "Strides", "Recovery Run",
+        ],
+        "Peak": [
+            "VO2max Intervals", "Repetitions", "Race Pace Run",
+            "Easy Run", "Strides", "Recovery Run", "Cross-Training",
+        ],
+        "Taper": [
+            "Taper / Openers", "Strides", "Easy Run",
+            "Recovery Run", "Cross-Training", "Easy Run", "Recovery Run",
+        ],
+        "Recovery": PHASE_TEMPLATES["Recovery"],
+    },
+    "Mile": {
+        "Base": [
+            "Easy Run", "Strides", "Hill Repeats", "Long Run",
+            "Recovery Run", "Fartlek", "Cross-Training",
+        ],
+        "Build": [
+            "VO2max Intervals", "Repetitions", "Tempo Run",
+            "Easy Run", "Hill Repeats", "Strides", "Recovery Run",
+        ],
+        "Peak": [
+            "VO2max Intervals", "Repetitions", "Race Pace Run",
+            "Easy Run", "Strides", "Recovery Run", "Cross-Training",
+        ],
+        "Taper": [
+            "Taper / Openers", "Strides", "Easy Run",
+            "Recovery Run", "Cross-Training", "Easy Run", "Recovery Run",
+        ],
+        "Recovery": PHASE_TEMPLATES["Recovery"],
+    },
+    # --- 5K ---
+    # Emphasis: VO2max primary, threshold secondary; moderate long run
+    "5K": {
+        "Base": [
+            "Easy Run", "Long Run", "Strides", "Recovery Run",
+            "Hill Repeats", "Fartlek", "Cross-Training",
+        ],
+        "Build": [
+            "VO2max Intervals", "Tempo Run", "Cruise Intervals",
+            "Easy Run", "Long Run", "Strides", "Recovery Run",
+        ],
+        "Peak": [
+            "VO2max Intervals", "Repetitions", "Tempo Run",
+            "Race Pace Run", "Easy Run", "Recovery Run", "Strides",
+        ],
+        "Taper": [
+            "Taper / Openers", "Strides", "Easy Run",
+            "Race Pace Run", "Recovery Run", "Easy Run", "Cross-Training",
+        ],
+        "Recovery": PHASE_TEMPLATES["Recovery"],
+    },
+    # --- 10K ---
+    # Emphasis: balanced VO2max and threshold; longer long run
+    "10K": {
+        "Base": [
+            "Easy Run", "Long Run", "Strides", "Recovery Run",
+            "Hill Repeats", "Fartlek", "Cross-Training",
+        ],
+        "Build": [
+            "Tempo Run", "VO2max Intervals", "Cruise Intervals",
+            "Long Run", "Easy Run", "Recovery Run", "Hill Repeats",
+        ],
+        "Peak": [
+            "VO2max Intervals", "Race Pace Run", "Tempo Run",
+            "Cruise Intervals", "Easy Run", "Recovery Run", "Strides",
+        ],
+        "Taper": [
+            "Taper / Openers", "Easy Run", "Race Pace Run",
+            "Recovery Run", "Strides", "Easy Run", "Cross-Training",
+        ],
+        "Recovery": PHASE_TEMPLATES["Recovery"],
+    },
+    # --- Half Marathon ---
+    # Emphasis: threshold primary, M-pace long runs; VO2max for speed reserve
+    "Half Marathon": {
+        "Base": [
+            "Easy Run", "Long Run", "Strides", "Recovery Run",
+            "Hill Repeats", "Fartlek", "Cross-Training",
+        ],
+        "Build": [
+            "Tempo Run", "Long Run with M-Pace Finish", "VO2max Intervals",
+            "Cruise Intervals", "Easy Run", "Recovery Run", "Hill Repeats",
+        ],
+        "Peak": [
+            "Race Pace Run", "Long Run with M-Pace Finish", "VO2max Intervals",
+            "Tempo Run", "Easy Run", "Recovery Run", "Strides",
+        ],
+        "Taper": [
+            "Taper / Openers", "Easy Run", "Race Pace Run",
+            "Recovery Run", "Strides", "Easy Run", "Cross-Training",
+        ],
+        "Recovery": PHASE_TEMPLATES["Recovery"],
+    },
+    # --- Marathon ---
+    # Emphasis: M-pace endurance primary; long runs with M-pace finish;
+    # threshold for fatigue resistance; VO2max for aerobic ceiling
+    "Marathon": {
+        "Base": [
+            "Easy Run", "Long Run", "Strides", "Recovery Run",
+            "Hill Repeats", "Fartlek", "Cross-Training",
+        ],
+        "Build": [
+            "Long Run with M-Pace Finish", "Marathon Pace Run", "Tempo Run",
+            "VO2max Intervals", "Easy Run", "Recovery Run", "Cruise Intervals",
+        ],
+        "Peak": [
+            "Marathon Pace Run", "Long Run with M-Pace Finish", "Race Rehearsal",
+            "VO2max Intervals", "Easy Run", "Recovery Run", "Tempo Run",
+        ],
+        "Taper": [
+            "Taper / Openers", "Easy Run", "Race Pace Run",
+            "Marathon Pace Run", "Recovery Run", "Easy Run", "Cross-Training",
+        ],
+        "Recovery": PHASE_TEMPLATES["Recovery"],
+    },
+}
+
+# Distance-specific phase allocation: (base_end, build_end, peak_end) as fractions of total_weeks.
+# Remaining fraction after peak_end is Taper.
+DISTANCE_PHASE_SPLITS: dict[str, tuple[float, float, float]] = {
+    "800m":          (0.25, 0.60, 0.85),
+    "1500m":         (0.25, 0.60, 0.85),
+    "Mile":          (0.25, 0.60, 0.85),
+    "5K":            (0.30, 0.65, 0.88),
+    "10K":           (0.35, 0.65, 0.88),
+    "Half Marathon":  (0.35, 0.65, 0.85),
+    "Marathon":       (0.40, 0.70, 0.88),
+}
+
+
+def get_phase_sessions(
+    phase: str,
+    sessions_per_week: int,
+    race_goal: str | None = None,
+) -> list[str]:
+    """Return the Daniels-informed session sequence for a phase, capped at sessions_per_week.
+
+    When race_goal is provided, selects from distance-specific templates that
+    prioritise the workouts most relevant for that race distance.
+    Falls back to generic templates for unrecognised distances.
+    """
+    if race_goal and race_goal in DISTANCE_PHASE_TEMPLATES:
+        dist_templates = DISTANCE_PHASE_TEMPLATES[race_goal]
+        template = dist_templates.get(phase, PHASE_TEMPLATES.get(phase, PHASE_TEMPLATES["Base"]))
+    else:
+        template = PHASE_TEMPLATES.get(phase, PHASE_TEMPLATES["Base"])
     return template[:sessions_per_week]
 
 

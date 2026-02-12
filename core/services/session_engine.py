@@ -3,12 +3,17 @@
 Handles both legacy v2 structures (zone-based) and v3 structures
 (Daniels pace labels with prescriptive intervals). Phase-aware adaptation
 adjusts differently in Base, Build, Peak, and Taper phases.
+
+When a VDOT score is provided, Daniels pace labels (E, M, T, I, R) in v3
+structures are resolved to concrete sec/km values with pace bands.
 """
 
 from __future__ import annotations
 
 from copy import deepcopy
 from typing import Any
+
+from core.services.vdot import daniels_pace_band, pace_display, resolve_daniels_pace
 
 
 ZONE_ORDER = ["Z1", "Z2", "Z3", "Z4", "Z5"]
@@ -207,6 +212,44 @@ def _determine_phase_factors(action: str, phase: str | None) -> dict:
     return factors
 
 
+def _resolve_pace_labels(session: dict[str, Any], vdot: int) -> dict[str, Any]:
+    """Resolve Daniels pace labels to concrete sec/km values throughout a v3 structure.
+
+    Adds pace_sec_per_km, pace_display, pace_band_fast, pace_band_slow to each
+    target that has a pace_label, and to each interval that has a work_pace.
+    """
+    for block in session.get("blocks", []):
+        target = block.get("target")
+        if isinstance(target, dict) and "pace_label" in target:
+            label = target["pace_label"]
+            sec = resolve_daniels_pace(label, vdot)
+            if sec is not None:
+                fast, slow = daniels_pace_band(label, vdot)
+                target["pace_sec_per_km"] = sec
+                target["pace_display"] = pace_display(sec)
+                target["pace_band_fast"] = fast
+                target["pace_band_slow"] = slow
+
+        intervals = block.get("intervals")
+        if isinstance(intervals, list):
+            for ivl in intervals:
+                wp = ivl.get("work_pace")
+                if wp:
+                    sec = resolve_daniels_pace(wp, vdot)
+                    if sec is not None:
+                        fast, slow = daniels_pace_band(wp, vdot)
+                        ivl["work_pace_sec_per_km"] = sec
+                        ivl["work_pace_display"] = pace_display(sec)
+                        ivl["work_pace_band"] = [fast, slow]
+                rp = ivl.get("recovery_pace")
+                if rp:
+                    sec = resolve_daniels_pace(rp, vdot)
+                    if sec is not None:
+                        ivl["recovery_pace_sec_per_km"] = sec
+                        ivl["recovery_pace_display"] = pace_display(sec)
+    return session
+
+
 def adapt_session_structure(
     structure_json: dict[str, Any],
     readiness: float | None,
@@ -214,11 +257,13 @@ def adapt_session_structure(
     acute_chronic_ratio: float,
     days_to_event: int | None,
     phase: str | None = None,
+    vdot: int | None = None,
 ) -> dict[str, Any]:
     """Adapt a session structure based on readiness, pain, workload ratio, event proximity, and phase.
 
     Handles both v2 (zone-based) and v3 (Daniels pace + intervals) structures.
     Phase-aware adaptation adjusts volume/intensity priorities per training phase.
+    When vdot is provided, resolves Daniels labels to concrete sec/km paces with bands.
     Returns a dict with keys: action, reason, and the adjusted session.
     """
     session = deepcopy(structure_json or {})
@@ -284,4 +329,9 @@ def adapt_session_structure(
         adjusted_blocks.append(row)
 
     session["blocks"] = adjusted_blocks
+
+    # Resolve Daniels labels to concrete paces when VDOT is available
+    if vdot and is_v3:
+        session = _resolve_pace_labels(session, vdot)
+
     return {"action": action, "reason": reason, "session": session}

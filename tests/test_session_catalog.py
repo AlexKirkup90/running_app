@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from core.services.session_catalog import (
     CATALOG,
+    DISTANCE_PHASE_SPLITS,
+    DISTANCE_PHASE_TEMPLATES,
     PHASE_TEMPLATES,
     build_prescriptive_progression,
     build_prescriptive_regression,
@@ -162,3 +164,67 @@ def test_build_phase_sessions_peak():
 def test_build_phase_sessions_taper():
     sessions = get_phase_sessions("Taper", 4)
     assert "Taper / Openers" in sessions
+
+
+# --- Distance-specific template tests ---
+
+def test_distance_templates_exist_for_all_distances():
+    for dist in ["800m", "1500m", "Mile", "5K", "10K", "Half Marathon", "Marathon"]:
+        assert dist in DISTANCE_PHASE_TEMPLATES, f"Missing templates for {dist}"
+        for phase in ["Base", "Build", "Peak", "Taper", "Recovery"]:
+            assert phase in DISTANCE_PHASE_TEMPLATES[dist], f"Missing {phase} for {dist}"
+
+
+def test_distance_phase_splits_exist():
+    for dist in ["800m", "1500m", "Mile", "5K", "10K", "Half Marathon", "Marathon"]:
+        assert dist in DISTANCE_PHASE_SPLITS
+        base_end, build_end, peak_end = DISTANCE_PHASE_SPLITS[dist]
+        assert 0 < base_end < build_end < peak_end < 1
+
+
+def test_5k_build_prioritises_vo2max():
+    sessions = get_phase_sessions("Build", 4, race_goal="5K")
+    assert "VO2max Intervals" in sessions
+
+
+def test_marathon_build_prioritises_mpace():
+    sessions = get_phase_sessions("Build", 4, race_goal="Marathon")
+    assert "Long Run with M-Pace Finish" in sessions
+    assert "Marathon Pace Run" in sessions
+
+
+def test_mile_build_has_repetitions():
+    sessions = get_phase_sessions("Build", 4, race_goal="Mile")
+    assert "Repetitions" in sessions
+
+
+def test_half_marathon_build_has_tempo():
+    sessions = get_phase_sessions("Build", 4, race_goal="Half Marathon")
+    assert "Tempo Run" in sessions
+
+
+def test_800m_build_has_short_intervals():
+    sessions = get_phase_sessions("Build", 4, race_goal="800m")
+    assert "VO2max Short Intervals" in sessions
+    assert "Repetitions" in sessions
+
+
+def test_5k_and_marathon_build_differ():
+    """5K and Marathon should have different Build phase session priorities."""
+    sessions_5k = get_phase_sessions("Build", 5, race_goal="5K")
+    sessions_marathon = get_phase_sessions("Build", 5, race_goal="Marathon")
+    assert sessions_5k != sessions_marathon
+
+
+def test_unknown_distance_falls_back_to_generic():
+    sessions = get_phase_sessions("Build", 4, race_goal="Ultra")
+    generic = get_phase_sessions("Build", 4, race_goal=None)
+    assert sessions == generic
+
+
+def test_all_distance_templates_reference_valid_workouts():
+    """Every session name in distance templates must exist in the catalog."""
+    for dist, phases in DISTANCE_PHASE_TEMPLATES.items():
+        for phase, sessions in phases.items():
+            for session_name in sessions:
+                assert session_name in CATALOG, f"'{session_name}' in {dist}/{phase} not in CATALOG"
