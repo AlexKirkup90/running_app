@@ -1,3 +1,10 @@
+"""Session engine: adapts session structures based on athlete state.
+
+Handles both legacy v2 structures (zone-based) and v3 structures
+(Daniels pace labels with prescriptive intervals). Phase-aware adaptation
+adjusts differently in Base, Build, Peak, and Taper phases.
+"""
+
 from __future__ import annotations
 
 from copy import deepcopy
@@ -5,6 +12,9 @@ from typing import Any
 
 
 ZONE_ORDER = ["Z1", "Z2", "Z3", "Z4", "Z5"]
+
+# Daniels pace hierarchy from easiest to hardest
+DANIELS_PACE_ORDER = ["E", "M", "T", "I", "R"]
 
 
 def compute_acute_chronic_ratio(loads_28d: list[float]) -> float:
@@ -106,52 +116,160 @@ def _shift_zone_label(label: str, delta: int) -> str:
     return updated
 
 
+def _shift_daniels_pace(pace: str, delta: int) -> str:
+    """Shift a Daniels pace label up or down the intensity scale.
+
+    Negative delta = easier (E direction), positive delta = harder (R direction).
+    """
+    if pace not in DANIELS_PACE_ORDER:
+        return pace
+    idx = DANIELS_PACE_ORDER.index(pace)
+    nidx = max(0, min(len(DANIELS_PACE_ORDER) - 1, idx + delta))
+    return DANIELS_PACE_ORDER[nidx]
+
+
+def _adapt_intervals(intervals: list[dict], action: str, rep_delta: int) -> list[dict]:
+    """Adapt interval blocks at the rep/duration level based on action.
+
+    - downshift: reduce reps, extend recovery
+    - taper: reduce reps significantly, shorten work
+    - progress: add reps
+    """
+    adapted = []
+    for ivl in intervals:
+        row = deepcopy(ivl)
+        reps = int(row.get("reps", 1))
+        work_dur = float(row.get("work_duration_min", 1))
+        recovery_dur = float(row.get("recovery_duration_min", 1))
+
+        if action == "downshift":
+            reps = max(1, reps + rep_delta)  # rep_delta is negative
+            recovery_dur = round(recovery_dur * 1.25, 2)
+            row["work_pace"] = _shift_daniels_pace(row.get("work_pace", "E"), -1)
+        elif action == "taper":
+            reps = max(1, reps - max(1, reps // 3))
+            work_dur = round(work_dur * 0.85, 2)
+        elif action == "progress":
+            reps = reps + rep_delta  # rep_delta is positive
+            work_dur = round(work_dur * 1.05, 2)
+
+        row["reps"] = reps
+        row["work_duration_min"] = work_dur
+        row["recovery_duration_min"] = recovery_dur
+        adapted.append(row)
+    return adapted
+
+
+def _determine_phase_factors(action: str, phase: str | None) -> dict:
+    """Apply phase-aware multipliers to the base adaptation action.
+
+    Returns dict with main_factor, zone_shift, rep_delta adjustments.
+    """
+    # Base defaults per action
+    defaults = {
+        "downshift": {"main_factor": 0.75, "zone_shift": -1, "rep_delta": -1},
+        "taper": {"main_factor": 0.85, "zone_shift": -1, "rep_delta": 0},
+        "progress": {"main_factor": 1.1, "zone_shift": 0, "rep_delta": 1},
+        "keep": {"main_factor": 1.0, "zone_shift": 0, "rep_delta": 0},
+    }
+    factors = dict(defaults.get(action, defaults["keep"]))
+
+    if not phase:
+        return factors
+
+    if action == "downshift":
+        if phase == "Base":
+            # Protect aerobic volume — less duration cut, same zone shift
+            factors["main_factor"] = 0.85
+        elif phase in ("Build", "Peak"):
+            # Protect intensity — cut volume more, keep zones closer
+            factors["main_factor"] = 0.70
+            factors["rep_delta"] = -2
+        elif phase == "Taper":
+            factors["main_factor"] = 0.80
+    elif action == "taper":
+        if phase == "Peak":
+            # Maintain 1-2 intensity touches
+            factors["main_factor"] = 0.60
+            factors["zone_shift"] = 0  # Keep intensity, cut volume hard
+        else:
+            factors["main_factor"] = 0.85
+    elif action == "progress":
+        if phase == "Base":
+            # Progress via duration, not intensity
+            factors["main_factor"] = 1.15
+            factors["rep_delta"] = 0
+        elif phase in ("Build", "Peak"):
+            # Progress via reps, moderate duration increase
+            factors["main_factor"] = 1.05
+            factors["rep_delta"] = 1
+
+    return factors
+
+
 def adapt_session_structure(
     structure_json: dict[str, Any],
     readiness: float | None,
     pain_flag: bool,
     acute_chronic_ratio: float,
     days_to_event: int | None,
+    phase: str | None = None,
 ) -> dict[str, Any]:
-    """Adapt a session structure based on readiness, pain, workload ratio, and event proximity.
+    """Adapt a session structure based on readiness, pain, workload ratio, event proximity, and phase.
 
-    Returns a dict with keys: action ('keep'|'downshift'|'taper'|'progress'), reason, and the adjusted session.
+    Handles both v2 (zone-based) and v3 (Daniels pace + intervals) structures.
+    Phase-aware adaptation adjusts volume/intensity priorities per training phase.
+    Returns a dict with keys: action, reason, and the adjusted session.
     """
     session = deepcopy(structure_json or {})
     blocks = session.get("blocks", [])
     action = "keep"
     reason = "No adaptation required."
-    main_factor = 1.0
-    zone_shift = 0
 
+    # Determine action
     if pain_flag or (readiness is not None and readiness < 3.0):
         action = "downshift"
         reason = "Low readiness or pain flag detected."
-        main_factor = 0.75
-        zone_shift = -1
     elif days_to_event is not None and 0 <= days_to_event <= 10:
         action = "taper"
         reason = "Event proximity taper applied."
-        main_factor = 0.85
-        zone_shift = -1
     elif (readiness is not None and readiness >= 4.2) and acute_chronic_ratio <= 0.9:
         action = "progress"
         reason = "High readiness with manageable load."
-        main_factor = 1.1
-        zone_shift = 0
+
+    # Get phase-aware factors
+    factors = _determine_phase_factors(action, phase)
+    main_factor = factors["main_factor"]
+    zone_shift = factors["zone_shift"]
+    rep_delta = factors["rep_delta"]
+
+    is_v3 = session.get("version", 2) >= 3
 
     adjusted_blocks: list[dict[str, Any]] = []
     for block in blocks:
         row = deepcopy(block)
+
         if row.get("phase") == "main_set":
             duration = int(row.get("duration_min", 0) or 0)
             row["duration_min"] = max(8, int(round(duration * main_factor)))
+
+            # Adapt intervals (v3)
+            intervals = row.get("intervals")
+            if isinstance(intervals, list) and intervals:
+                row["intervals"] = _adapt_intervals(intervals, action, rep_delta)
+
         target = row.get("target")
         if isinstance(target, dict):
+            # v3: shift Daniels pace labels
+            if is_v3 and "pace_label" in target and isinstance(target["pace_label"], str):
+                target["pace_label"] = _shift_daniels_pace(target["pace_label"], zone_shift)
+
+            # v2 compatibility: shift zone labels
             if "pace_zone" in target and isinstance(target["pace_zone"], str):
                 target["pace_zone"] = _shift_zone_label(target["pace_zone"], zone_shift)
             if "hr_zone" in target and isinstance(target["hr_zone"], str):
                 target["hr_zone"] = _shift_zone_label(target["hr_zone"], zone_shift)
+
             rpe = target.get("rpe_range")
             if isinstance(rpe, list) and len(rpe) == 2:
                 lo, hi = int(rpe[0]), int(rpe[1])

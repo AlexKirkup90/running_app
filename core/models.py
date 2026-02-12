@@ -33,6 +33,7 @@ class Athlete(Base):
     resting_hr: Mapped[Optional[int]] = mapped_column(Integer)
     threshold_pace_sec_per_km: Mapped[Optional[int]] = mapped_column(Integer)
     easy_pace_sec_per_km: Mapped[Optional[int]] = mapped_column(Integer)
+    vdot_score: Mapped[Optional[int]] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(20), default="active", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 

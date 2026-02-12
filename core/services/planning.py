@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, timedelta
 
+from core.services.session_catalog import get_phase_sessions
+
 RACE_LONG_RUN_TARGET = {"5K": 75, "10K": 95, "Half Marathon": 130, "Marathon": 180}
 SESSION_DAY_OFFSETS = [0, 1, 3, 5, 6, 2, 4]
 
@@ -30,19 +32,13 @@ def _phase_for_week(week: int, total: int) -> str:
 
 
 def default_phase_session_tokens(phase: str, sessions_per_week: int) -> list[str]:
-    """Return the default ordered list of session-type tokens for a training phase.
+    """Return the Daniels-informed session sequence for a training phase.
 
-    Truncates the phase template to sessions_per_week entries.
+    Uses the new session_catalog phase templates with specific workout types
+    (Tempo Run, Cruise Intervals, VO2max Intervals, etc.) instead of generic
+    categories. Falls back to legacy templates for unknown phases.
     """
-    phase_templates = {
-        "Base": ["Easy Run", "Long Run", "Strides / Neuromuscular", "Recovery Run", "Easy Run", "Cross-Training Optional"],
-        "Build": ["Tempo / Threshold", "VO2 Intervals", "Long Run", "Easy Run", "Hill Repeats", "Recovery Run"],
-        "Peak": ["Race Pace", "VO2 Intervals", "Long Run", "Recovery Run", "Tempo / Threshold", "Easy Run"],
-        "Taper": ["Taper / Openers", "Easy Run", "Race Pace", "Recovery Run", "Easy Run", "Cross-Training Optional"],
-        "Recovery": ["Recovery Run", "Easy Run", "Cross-Training Optional", "Easy Run", "Recovery Run", "Cross-Training Optional"],
-    }
-    base = phase_templates.get(phase, phase_templates["Base"])
-    return base[:sessions_per_week]
+    return get_phase_sessions(phase, sessions_per_week)
 
 
 def assign_week_sessions(week_start: date, session_names: list[str]) -> list[dict]:
@@ -58,9 +54,11 @@ def assign_week_sessions(week_start: date, session_names: list[str]) -> list[dic
 
 
 def generate_plan_weeks(start_date: date, weeks: int, race_goal: str, sessions_per_week: int = 4, max_session_min: int = 120) -> list[dict]:
-    """Generate a multi-week training plan with phased periodization for a given race goal.
+    """Generate a multi-week training plan with Daniels-informed periodization.
 
-    Returns a list of week dicts containing phase, target load, and session order.
+    Uses phase-specific Daniels workout types and race-goal-appropriate
+    long-run targets. Returns a list of week dicts containing phase,
+    target load, and session order.
     """
     target_lr = RACE_LONG_RUN_TARGET[race_goal]
     rows: list[dict] = []
