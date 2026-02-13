@@ -957,6 +957,99 @@ def coach_plan_builder() -> None:
                     st.rerun()
 
 
+def _render_session_detail(detail: dict) -> None:
+    """Render a rich Daniels-style session detail view."""
+    st.markdown(f"### {detail['name']}")
+    st.caption(
+        f"**Category:** {detail['category']} | **Intent:** {detail['intent']} | "
+        f"**Energy System:** {detail['energy_system']} | **Tier:** {detail['tier']} | "
+        f"**Duration:** {detail['duration_min']} min"
+    )
+    if detail.get("prescription"):
+        st.markdown(f"**Prescription:** {detail['prescription']}")
+    if detail.get("coaching_notes"):
+        st.markdown(f"**Coaching Notes:** {detail['coaching_notes']}")
+
+    structure = detail.get("structure_json")
+    if isinstance(structure, dict):
+        is_v3 = structure.get("version", 2) >= 3
+        blocks = structure.get("blocks", [])
+
+        # Show version badge
+        if is_v3:
+            st.markdown("**Session Design:** Daniels Running Formula (v3 prescriptive)")
+        else:
+            st.markdown("**Session Design:** Zone-based (v2)")
+
+        # Render blocks
+        if blocks:
+            block_rows = []
+            for block in blocks:
+                tgt = block.get("target", {})
+                if is_v3:
+                    pace_col = tgt.get("pace_label", "")
+                    hr_col = ""
+                else:
+                    pace_col = tgt.get("pace_zone", "")
+                    hr_col = tgt.get("hr_zone", "")
+                block_rows.append({
+                    "Phase": block.get("phase", ""),
+                    "Duration (min)": block.get("duration_min", ""),
+                    "Daniels Pace": pace_col if is_v3 else "",
+                    "Pace Zone": pace_col if not is_v3 else "",
+                    "HR Zone": hr_col,
+                    "RPE Range": str(tgt.get("rpe_range", "")),
+                })
+            # Remove empty columns
+            block_df = pd.DataFrame(block_rows)
+            block_df = block_df.loc[:, (block_df != "").any()]
+            st.markdown("**Workout Blocks**")
+            st.dataframe(block_df, use_container_width=True)
+
+            # Render interval detail for v3 sessions
+            interval_rows = []
+            for block in blocks:
+                intervals = block.get("intervals")
+                if isinstance(intervals, list):
+                    for ivl in intervals:
+                        work_pace = ivl.get("work_pace", "")
+                        recovery_pace = ivl.get("recovery_pace", "")
+                        interval_rows.append({
+                            "Reps": ivl.get("reps", ""),
+                            "Work Duration": f"{ivl.get('work_duration_min', '')} min",
+                            "Work Pace": work_pace,
+                            "Recovery Duration": f"{ivl.get('recovery_duration_min', '')} min",
+                            "Recovery Pace": recovery_pace,
+                            "Description": ivl.get("description", ""),
+                        })
+            if interval_rows:
+                st.markdown("**Interval Prescription**")
+                st.dataframe(pd.DataFrame(interval_rows), use_container_width=True)
+
+    # Progression & Regression rules
+    prog = detail.get("progression_json")
+    reg = detail.get("regression_json")
+    if (isinstance(prog, dict) and prog) or (isinstance(reg, dict) and reg):
+        with st.expander("Progression & Regression Rules"):
+            if isinstance(prog, dict) and prog:
+                st.markdown("**Progression Rules**")
+                for key, rule in prog.items():
+                    if isinstance(rule, dict):
+                        st.write(f"- **{key}**: {rule.get('trigger', '')} → {rule.get('action', '')}")
+            if isinstance(reg, dict) and reg:
+                st.markdown("**Regression Rules**")
+                for key, rule in reg.items():
+                    if isinstance(rule, dict):
+                        st.write(f"- **{key}**: {rule.get('trigger', '')} → {rule.get('action', '')}")
+
+    # Targets
+    targets = detail.get("targets_json")
+    if isinstance(targets, dict) and targets:
+        with st.expander("Session Targets"):
+            for key, val in targets.items():
+                st.write(f"- **{key}**: {val}")
+
+
 def coach_session_library() -> None:
     st.header("Session Library")
     with session_scope() as s:
@@ -1044,6 +1137,14 @@ def coach_session_library() -> None:
             filtered = filtered[(filtered["duration_min"] >= duration_range[0]) & (filtered["duration_min"] <= duration_range[1])]
             st.caption(f"{len(filtered)} sessions")
             st.dataframe(filtered[["id", "name", "category", "intent", "energy_system", "tier", "treadmill", "duration_min"]].sort_values(["category", "duration_min", "name"]), use_container_width=True)
+
+            # ── Daniels Session Detail View ──────────────────────────
+            if not filtered.empty:
+                detail_opts = {f"{row['name']} ({row['category']} / {row['tier']})": int(row["id"]) for _, row in filtered.iterrows()}
+                detail_label = st.selectbox("Inspect Session", list(detail_opts.keys()), key="browse_detail")
+                detail_id = detail_opts[detail_label]
+                detail = next(r for r in full_rows if r["id"] == detail_id)
+                _render_session_detail(detail)
 
     with add_tab:
         st.subheader("Add Session Template")
@@ -1686,6 +1787,92 @@ def _show_org_detail(org_id, org_name, tier, max_c, max_a, my_role, coach_user_i
                     ))
                     st.success(f"Assigned {sel_ath} to {sel_to_coach}.")
                     st.rerun()
+
+
+def coach_vdot_calculator() -> None:
+    """VDOT pace calculator using Jack Daniels' Running Formula."""
+    from core.services.vdot import (
+        RACE_DISTANCES_M,
+        estimate_vdot,
+        get_paces,
+        pace_display,
+        pace_range_display,
+        daniels_pace_band,
+    )
+
+    st.header("VDOT Pace Calculator")
+    st.caption("Based on Jack Daniels' Running Formula — calculates five training paces from VDOT or a race result.")
+
+    calc_tab, table_tab = st.tabs(["Calculator", "Pace Table"])
+
+    with calc_tab:
+        method = st.radio("Input Method", ["Enter VDOT directly", "Estimate from race result"], horizontal=True)
+
+        vdot_val = None
+        if method == "Enter VDOT directly":
+            vdot_val = st.number_input("VDOT Score", min_value=30.0, max_value=85.0, value=45.0, step=0.5)
+        else:
+            race_dist = st.selectbox("Race Distance", list(RACE_DISTANCES_M.keys()))
+            col_h, col_m, col_s = st.columns(3)
+            with col_h:
+                hours = st.number_input("Hours", min_value=0, max_value=6, value=0)
+            with col_m:
+                minutes = st.number_input("Minutes", min_value=0, max_value=59, value=22)
+            with col_s:
+                seconds = st.number_input("Seconds", min_value=0, max_value=59, value=0)
+            total_seconds = hours * 3600 + minutes * 60 + seconds
+            if total_seconds > 0:
+                distance_m = RACE_DISTANCES_M[race_dist]
+                vdot_val = estimate_vdot(distance_m, total_seconds)
+                st.success(f"Estimated VDOT: **{vdot_val:.1f}**")
+
+        if vdot_val:
+            paces = get_paces(vdot_val)
+            st.subheader(f"Training Paces for VDOT {vdot_val:.1f}")
+
+            pace_data = [
+                {"Pace Type": "E (Easy)", "Label": "E", "Pace": pace_display(paces.E),
+                 "Band": pace_range_display(*daniels_pace_band("E", vdot_val)),
+                 "Purpose": "Aerobic development, recovery. Most daily running."},
+                {"Pace Type": "M (Marathon)", "Label": "M", "Pace": pace_display(paces.M),
+                 "Band": pace_range_display(*daniels_pace_band("M", vdot_val)),
+                 "Purpose": "Marathon-specific endurance. Long run segments."},
+                {"Pace Type": "T (Threshold)", "Label": "T", "Pace": pace_display(paces.T),
+                 "Band": pace_range_display(*daniels_pace_band("T", vdot_val)),
+                 "Purpose": "Lactate clearance. Tempo runs, cruise intervals."},
+                {"Pace Type": "I (Interval)", "Label": "I", "Pace": pace_display(paces.I),
+                 "Band": pace_range_display(*daniels_pace_band("I", vdot_val)),
+                 "Purpose": "VO2max stimulus. 3-5 min work intervals."},
+                {"Pace Type": "R (Repetition)", "Label": "R", "Pace": pace_display(paces.R),
+                 "Band": pace_range_display(*daniels_pace_band("R", vdot_val)),
+                 "Purpose": "Speed & running economy. Short, fast reps."},
+            ]
+            st.dataframe(pd.DataFrame(pace_data)[["Pace Type", "Pace", "Band", "Purpose"]], use_container_width=True, hide_index=True)
+
+            # Quick reference per-km and per-mile
+            st.subheader("Pace Reference")
+            ref_cols = st.columns(5)
+            labels = ["E", "M", "T", "I", "R"]
+            sec_values = [paces.E, paces.M, paces.T, paces.I, paces.R]
+            for col, label, sec_km in zip(ref_cols, labels, sec_values):
+                mile_sec = sec_km * 1.60934
+                col.metric(label, pace_display(sec_km), delta=f"{pace_display(mile_sec)} /mi")
+
+    with table_tab:
+        st.subheader("VDOT Pace Lookup Table")
+        st.caption("All five Daniels paces for VDOT 30 to 85.")
+        table_rows = []
+        for v in range(30, 86):
+            p = get_paces(float(v))
+            table_rows.append({
+                "VDOT": v,
+                "Easy": pace_display(p.E),
+                "Marathon": pace_display(p.M),
+                "Threshold": pace_display(p.T),
+                "Interval": pace_display(p.I),
+                "Repetition": pace_display(p.R),
+            })
+        st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True, height=600)
 
 
 def coach_admin_tools() -> None:

@@ -11,15 +11,19 @@ from pages.coach import (
     coach_admin_tools,
     coach_clients,
     coach_command_center,
+    coach_community,
     coach_dashboard,
     coach_integrations,
+    coach_org_management,
     coach_plan_builder,
     coach_portfolio_analytics,
     coach_session_library,
+    coach_vdot_calculator,
 )
 from pages.athlete import (
     athlete_analytics,
     athlete_checkin,
+    athlete_community,
     athlete_dashboard,
     athlete_events,
     athlete_log,
@@ -51,7 +55,7 @@ def main():
 
     try:
         if role == "coach":
-            page = st.sidebar.radio("Coach", ["Dashboard", "Command Center", "Clients", "Add Client", "Plan Builder", "Session Library", "Portfolio Analytics", "Integrations", "Admin Tools"])
+            page = st.sidebar.radio("Coach", ["Dashboard", "Command Center", "Clients", "Add Client", "Plan Builder", "Session Library", "VDOT Calculator", "Portfolio Analytics", "Integrations", "Community", "Organization", "Admin Tools"])
             if page == "Dashboard":
                 coach_dashboard()
             elif page == "Command Center":
@@ -64,14 +68,20 @@ def main():
                 coach_plan_builder()
             elif page == "Session Library":
                 coach_session_library()
+            elif page == "VDOT Calculator":
+                coach_vdot_calculator()
             elif page == "Portfolio Analytics":
                 coach_portfolio_analytics()
             elif page == "Integrations":
                 coach_integrations()
+            elif page == "Community":
+                coach_community()
+            elif page == "Organization":
+                coach_org_management()
             elif page == "Admin Tools":
                 coach_admin_tools()
         else:
-            page = st.sidebar.radio("Athlete", ["Dashboard", "Log Session", "Check-In", "Events", "Analytics", "Profile"])
+            page = st.sidebar.radio("Athlete", ["Dashboard", "Log Session", "Check-In", "Events", "Analytics", "Community", "Profile"])
             athlete_id = st.session_state.athlete_id
             if page == "Dashboard":
                 athlete_dashboard(athlete_id)
@@ -83,6 +93,8 @@ def main():
                 athlete_events(athlete_id)
             elif page == "Analytics":
                 athlete_analytics(athlete_id)
+            elif page == "Community":
+                athlete_community(athlete_id)
             elif page == "Profile":
                 athlete_profile(athlete_id)
     except Exception as e:
