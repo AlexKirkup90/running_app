@@ -163,6 +163,8 @@ class TrainingLog(Base):
     load_score: Mapped[float] = mapped_column(Float, default=0)
     notes: Mapped[str] = mapped_column(Text, default="")
     pain_flag: Mapped[bool] = mapped_column(Boolean, default=False)
+    source: Mapped[str] = mapped_column(String(40), default="manual")  # manual, garmin, strava
+    source_id: Mapped[Optional[str]] = mapped_column(String(120))  # external activity ID
     __table_args__ = (
         CheckConstraint("duration_min >= 0"),
         CheckConstraint("distance_km >= 0"),
@@ -261,6 +263,38 @@ class ImportItem(Base):
     raw_payload: Mapped[dict] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String(20), default="pending")
     message: Mapped[str] = mapped_column(String(255), default="")
+
+
+class WearableConnection(Base):
+    __tablename__ = "wearable_connections"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    athlete_id: Mapped[int] = mapped_column(ForeignKey("athletes.id"), index=True)
+    service: Mapped[str] = mapped_column(String(40), nullable=False)  # "garmin", "strava"
+    access_token: Mapped[str] = mapped_column(Text, default="")
+    refresh_token: Mapped[Optional[str]] = mapped_column(Text)
+    token_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    external_athlete_id: Mapped[Optional[str]] = mapped_column(String(120))
+    scope: Mapped[str] = mapped_column(String(255), default="")
+    last_sync_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    sync_cursor: Mapped[Optional[str]] = mapped_column(String(255))
+    sync_status: Mapped[str] = mapped_column(String(20), default="active")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    __table_args__ = (UniqueConstraint("athlete_id", "service", name="uq_wearable_athlete_service"),)
+
+
+class SyncLog(Base):
+    __tablename__ = "sync_logs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    athlete_id: Mapped[int] = mapped_column(ForeignKey("athletes.id"), index=True)
+    service: Mapped[str] = mapped_column(String(40), nullable=False)
+    sync_type: Mapped[str] = mapped_column(String(20), default="manual")  # manual, scheduled, webhook
+    status: Mapped[str] = mapped_column(String(20), default="started")
+    activities_found: Mapped[int] = mapped_column(Integer, default=0)
+    activities_imported: Mapped[int] = mapped_column(Integer, default=0)
+    activities_skipped: Mapped[int] = mapped_column(Integer, default=0)
+    error_message: Mapped[str] = mapped_column(Text, default="")
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
 
 
 Index("ix_logs_athlete_date", TrainingLog.athlete_id, TrainingLog.date)
