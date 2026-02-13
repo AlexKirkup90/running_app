@@ -399,6 +399,65 @@ def delete_webhook(hook_id: str, coach: Annotated[TokenData, Depends(require_coa
     return MessageOut(message="Webhook deleted")
 
 
+# ── Wearable Connections ──────────────────────────────────────────────────
+
+@router.get("/wearables/connections", tags=["wearables"])
+def list_wearable_connections(current_user: Annotated[TokenData, Depends(get_current_user)]):
+    """List wearable connections. Athletes see their own; coaches see all."""
+    from core.models import WearableConnection
+    with session_scope() as s:
+        q = select(WearableConnection)
+        if current_user.role == "client":
+            q = q.where(WearableConnection.athlete_id == current_user.athlete_id)
+        rows = s.execute(q.order_by(WearableConnection.id)).scalars().all()
+        return [
+            {
+                "id": r.id, "athlete_id": r.athlete_id, "service": r.service,
+                "sync_status": r.sync_status, "last_sync_at": str(r.last_sync_at) if r.last_sync_at else None,
+                "external_athlete_id": r.external_athlete_id,
+            }
+            for r in rows
+        ]
+
+
+@router.delete("/wearables/connections/{connection_id}", response_model=MessageOut, tags=["wearables"])
+def delete_wearable_connection(connection_id: int, current_user: Annotated[TokenData, Depends(get_current_user)]):
+    """Disconnect a wearable service."""
+    from core.models import WearableConnection
+    with session_scope() as s:
+        conn = s.get(WearableConnection, connection_id)
+        if not conn:
+            raise HTTPException(status_code=404, detail="Connection not found")
+        if current_user.role == "client" and conn.athlete_id != current_user.athlete_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+        s.delete(conn)
+    return MessageOut(message="Connection removed")
+
+
+@router.get("/wearables/sync-logs", tags=["wearables"])
+def list_sync_logs(
+    current_user: Annotated[TokenData, Depends(get_current_user)],
+    athlete_id: int | None = None,
+    limit: int = Query(20, le=100),
+):
+    """List sync logs. Athletes see their own; coaches can filter by athlete_id."""
+    from core.models import SyncLog
+    target_id = _resolve_athlete_id(current_user, athlete_id)
+    with session_scope() as s:
+        rows = s.execute(
+            select(SyncLog).where(SyncLog.athlete_id == target_id).order_by(SyncLog.id.desc()).limit(limit)
+        ).scalars().all()
+        return [
+            {
+                "id": r.id, "service": r.service, "sync_type": r.sync_type,
+                "status": r.status, "activities_found": r.activities_found,
+                "activities_imported": r.activities_imported, "activities_skipped": r.activities_skipped,
+                "started_at": str(r.started_at) if r.started_at else None,
+            }
+            for r in rows
+        ]
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────
 
 def _resolve_athlete_id(current_user: TokenData, requested_id: int | None) -> int:

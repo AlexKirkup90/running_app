@@ -17,7 +17,9 @@ from core.models import (
     PlanDaySession,
     PlanWeek,
     SessionLibrary,
+    SyncLog,
     TrainingLog,
+    WearableConnection,
 )
 from core.services.analytics import weekly_summary
 from core.services.race_predictor import predict_all_distances
@@ -31,6 +33,12 @@ from core.services.session_engine import (
 )
 from core.services.training_load import compute_session_load, compute_weekly_metrics, overtraining_risk
 from core.services.vdot import RACE_DISTANCES_M, pace_display
+from core.services.wearables.sync import (
+    build_training_log_dict,
+    default_lookback,
+    fetch_all_activities,
+    prepare_import_batch,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -584,3 +592,129 @@ def athlete_profile(athlete_id: int) -> None:
         st.write(f"Automation mode: {mode}")
         st.write(f"Auto-apply low risk: {low_risk}")
         st.write(f"Reminder days: {', '.join(days)}")
+
+    # ── Wearable Connections ──────────────────────────────────────────────
+    st.subheader("Connected Devices")
+    with session_scope() as s:
+        connections = s.execute(
+            select(
+                WearableConnection.id, WearableConnection.service,
+                WearableConnection.sync_status, WearableConnection.last_sync_at,
+                WearableConnection.external_athlete_id,
+            ).where(WearableConnection.athlete_id == athlete_id)
+        ).all()
+    if connections:
+        for conn_id, service, sync_status, last_sync, ext_id in connections:
+            status_icon = "green" if sync_status == "active" else "orange"
+            last_str = last_sync.strftime("%Y-%m-%d %H:%M") if last_sync else "Never"
+            st.write(
+                f":{status_icon}[{service.title()}] — Status: {sync_status} | "
+                f"Last sync: {last_str} | ID: {ext_id or 'n/a'}"
+            )
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button(f"Sync {service.title()} Now", key=f"sync_{conn_id}"):
+                    _trigger_wearable_sync(athlete_id, conn_id, service)
+            with col2:
+                if st.button(f"Disconnect {service.title()}", key=f"disc_{conn_id}"):
+                    with session_scope() as s:
+                        wc = s.get(WearableConnection, conn_id)
+                        if wc:
+                            s.delete(wc)
+                    st.success(f"{service.title()} disconnected.")
+                    st.rerun()
+    else:
+        st.info("No wearable devices connected.")
+    st.caption("To connect Garmin or Strava, your coach can initiate the connection from Integrations.")
+
+    # Recent sync history
+    with session_scope() as s:
+        sync_logs = s.execute(
+            select(SyncLog.service, SyncLog.status, SyncLog.activities_imported,
+                   SyncLog.activities_skipped, SyncLog.started_at)
+            .where(SyncLog.athlete_id == athlete_id)
+            .order_by(SyncLog.id.desc())
+            .limit(5)
+        ).all()
+    if sync_logs:
+        st.caption("Recent Syncs")
+        for svc, s_status, imported, skipped, started in sync_logs:
+            st.caption(f"{svc.title()} — {s_status} | +{imported} imported, {skipped} skipped | {started:%Y-%m-%d %H:%M}")
+
+
+def _trigger_wearable_sync(athlete_id: int, connection_id: int, service: str) -> None:
+    """Execute a manual sync for a single wearable connection."""
+    from datetime import datetime, timezone
+    with session_scope() as s:
+        conn = s.get(WearableConnection, connection_id)
+        if not conn or conn.sync_status != "active":
+            st.error("Connection not active.")
+            return
+        athlete = s.get(Athlete, athlete_id)
+        a_max_hr = athlete.max_hr if athlete else None
+        a_resting_hr = athlete.resting_hr if athlete else None
+
+        # Determine adapter
+        if service == "garmin":
+            from core.services.wearables.garmin import GarminAdapter
+            from core.config import get_config
+            cfg = get_config()
+            adapter = GarminAdapter(
+                client_id=getattr(cfg, "garmin_client_id", ""),
+                client_secret=getattr(cfg, "garmin_client_secret", ""),
+            )
+        elif service == "strava":
+            from core.services.wearables.strava import StravaAdapter
+            from core.config import get_config
+            cfg = get_config()
+            adapter = StravaAdapter(
+                client_id=getattr(cfg, "strava_client_id", ""),
+                client_secret=getattr(cfg, "strava_client_secret", ""),
+            )
+        else:
+            st.error(f"Unknown service: {service}")
+            return
+
+        # Create sync log
+        sync_log = SyncLog(athlete_id=athlete_id, service=service, sync_type="manual")
+        s.add(sync_log)
+        s.flush()
+
+        try:
+            after = default_lookback(conn.last_sync_at)
+            activities = fetch_all_activities(adapter, conn.access_token, after=after)
+            sync_log.activities_found = len(activities)
+
+            existing_ids = {
+                row[0] for row in s.execute(
+                    select(TrainingLog.source_id).where(
+                        TrainingLog.athlete_id == athlete_id,
+                        TrainingLog.source == service,
+                        TrainingLog.source_id.isnot(None),
+                    )
+                ).all()
+            }
+            existing_dates = {
+                row[0] for row in s.execute(
+                    select(TrainingLog.date).where(TrainingLog.athlete_id == athlete_id)
+                ).all()
+            }
+
+            candidates, skipped = prepare_import_batch(
+                activities, existing_ids, existing_dates, a_max_hr, a_resting_hr
+            )
+            sync_log.activities_skipped = skipped
+
+            for cand in candidates:
+                log_dict = build_training_log_dict(cand, athlete_id)
+                s.add(TrainingLog(**log_dict))
+            sync_log.activities_imported = len(candidates)
+
+            conn.last_sync_at = datetime.now(tz=timezone.utc)
+            sync_log.status = "completed"
+            sync_log.completed_at = datetime.now(tz=timezone.utc)
+            st.success(f"Sync complete: {len(candidates)} imported, {skipped} skipped.")
+        except Exception as e:
+            sync_log.status = "failed"
+            sync_log.error_message = str(e)[:500]
+            st.error(f"Sync failed: {e}")

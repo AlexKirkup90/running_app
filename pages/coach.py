@@ -22,8 +22,10 @@ from core.models import (
     PlanDaySession,
     PlanWeek,
     SessionLibrary,
+    SyncLog,
     TrainingLog,
     User,
+    WearableConnection,
 )
 from core.security import hash_password
 from core.services.analytics import weekly_summary
@@ -1255,15 +1257,113 @@ def coach_portfolio_analytics() -> None:
 
 def coach_integrations() -> None:
     st.header("Integrations")
+
+    # ── Wearable Connections Overview ─────────────────────────────────────
+    st.subheader("Wearable Connections")
+    with session_scope() as s:
+        connections = s.execute(
+            select(
+                WearableConnection.id, WearableConnection.athlete_id,
+                WearableConnection.service, WearableConnection.sync_status,
+                WearableConnection.last_sync_at, WearableConnection.external_athlete_id,
+                Athlete.first_name, Athlete.last_name,
+            ).join(Athlete, Athlete.id == WearableConnection.athlete_id)
+            .order_by(WearableConnection.service, Athlete.last_name)
+        ).all()
+    if connections:
+        conn_rows = []
+        for cid, aid, svc, status, last_sync, ext_id, first, last in connections:
+            conn_rows.append({
+                "Athlete": f"{first} {last}",
+                "Service": svc.title(),
+                "Status": status,
+                "Last Sync": last_sync.strftime("%Y-%m-%d %H:%M") if last_sync else "Never",
+                "External ID": ext_id or "",
+            })
+        st.dataframe(pd.DataFrame(conn_rows), use_container_width=True)
+    else:
+        st.info("No wearable connections yet.")
+
+    # ── Add Connection (demo/manual) ─────────────────────────────────────
+    st.subheader("Add Wearable Connection")
+    with session_scope() as s:
+        athletes = s.execute(
+            select(Athlete.id, Athlete.first_name, Athlete.last_name)
+            .where(Athlete.status == "active")
+            .order_by(Athlete.first_name)
+        ).all()
+    athlete_opts = {f"{first} {last}": aid for aid, first, last in athletes}
+    with st.form("add_connection"):
+        sel_name = st.selectbox("Athlete", list(athlete_opts.keys()) if athlete_opts else ["No athletes"])
+        sel_service = st.selectbox("Service", ["garmin", "strava"])
+        sel_token = st.text_input("Access Token (from OAuth callback)", type="password")
+        sel_refresh = st.text_input("Refresh Token (optional)", type="password")
+        sel_ext_id = st.text_input("External Athlete ID")
+        add_submit = st.form_submit_button("Connect")
+    if add_submit and sel_name in athlete_opts and sel_token:
+        sel_athlete_id = athlete_opts[sel_name]
+        with session_scope() as s:
+            existing = s.execute(
+                select(WearableConnection.id).where(
+                    WearableConnection.athlete_id == sel_athlete_id,
+                    WearableConnection.service == sel_service,
+                )
+            ).first()
+            if existing:
+                st.warning(f"{sel_name} already has a {sel_service} connection.")
+            else:
+                s.add(WearableConnection(
+                    athlete_id=sel_athlete_id,
+                    service=sel_service,
+                    access_token=sel_token,
+                    refresh_token=sel_refresh or None,
+                    external_athlete_id=sel_ext_id or None,
+                    sync_status="active",
+                ))
+                st.success(f"Connected {sel_service.title()} for {sel_name}.")
+                st.rerun()
+
+    # ── Sync Logs ────────────────────────────────────────────────────────
+    st.subheader("Sync History")
+    with session_scope() as s:
+        sync_logs = s.execute(
+            select(
+                SyncLog.id, SyncLog.service, SyncLog.sync_type, SyncLog.status,
+                SyncLog.activities_found, SyncLog.activities_imported,
+                SyncLog.activities_skipped, SyncLog.started_at,
+                Athlete.first_name, Athlete.last_name,
+            ).join(Athlete, Athlete.id == SyncLog.athlete_id)
+            .order_by(SyncLog.id.desc())
+            .limit(20)
+        ).all()
+    if sync_logs:
+        log_rows = []
+        for sid, svc, stype, status, found, imported, skipped, started, first, last in sync_logs:
+            log_rows.append({
+                "Athlete": f"{first} {last}",
+                "Service": svc.title(),
+                "Type": stype,
+                "Status": status,
+                "Found": found,
+                "Imported": imported,
+                "Skipped": skipped,
+                "Started": started.strftime("%Y-%m-%d %H:%M") if started else "",
+            })
+        st.dataframe(pd.DataFrame(log_rows), use_container_width=True)
+    else:
+        st.info("No sync logs yet.")
+
+    # ── Legacy Import Runs ───────────────────────────────────────────────
+    st.subheader("CSV Import Runs")
     with session_scope() as s:
         runs = s.execute(select(ImportRun.id, ImportRun.adapter_name, ImportRun.status, ImportRun.created_at).order_by(ImportRun.id.desc())).all()
-    if not runs:
-        st.info("No import runs yet.")
-        return
-    st.dataframe(
-        pd.DataFrame([{"id": rid, "adapter": adapter, "status": status, "created_at": created_at} for rid, adapter, status, created_at in runs]),
-        use_container_width=True,
-    )
+    if runs:
+        st.dataframe(
+            pd.DataFrame([{"id": rid, "adapter": adapter, "status": status, "created_at": created_at} for rid, adapter, status, created_at in runs]),
+            use_container_width=True,
+        )
+    else:
+        st.info("No CSV import runs yet.")
 
 
 def coach_admin_tools() -> None:
