@@ -12,17 +12,21 @@ from sqlalchemy import func, select
 from core.db import session_scope
 from core.models import (
     Athlete,
+    Challenge,
+    ChallengeEntry,
     CheckIn,
     CoachActionLog,
     CoachIntervention,
     CoachNotesTask,
     Event,
+    GroupMembership,
     ImportRun,
     Plan,
     PlanDaySession,
     PlanWeek,
     SessionLibrary,
     SyncLog,
+    TrainingGroup,
     TrainingLog,
     User,
     WearableConnection,
@@ -1364,6 +1368,138 @@ def coach_integrations() -> None:
         )
     else:
         st.info("No CSV import runs yet.")
+
+
+def coach_community() -> None:
+    """Community management: create groups, challenges, view leaderboards."""
+    st.header("Community Management")
+
+    # ── Training Groups ──────────────────────────────────────────────────
+    st.subheader("Training Groups")
+    with session_scope() as s:
+        groups = s.execute(
+            select(TrainingGroup.id, TrainingGroup.name, TrainingGroup.privacy,
+                   TrainingGroup.max_members, TrainingGroup.created_at)
+            .order_by(TrainingGroup.name)
+        ).all()
+    if groups:
+        group_rows = []
+        for gid, gname, privacy, max_m, created in groups:
+            with session_scope() as s:
+                member_count = len(s.execute(
+                    select(GroupMembership.id).where(GroupMembership.group_id == gid)
+                ).all())
+            group_rows.append({
+                "Group": gname, "Privacy": privacy,
+                "Members": f"{member_count}/{max_m}",
+                "Created": created.strftime("%Y-%m-%d") if created else "",
+            })
+        st.dataframe(pd.DataFrame(group_rows), use_container_width=True)
+    else:
+        st.info("No training groups created yet.")
+
+    # Create group form
+    with st.form("create_group"):
+        st.write("**Create Training Group**")
+        g_name = st.text_input("Group Name")
+        g_desc = st.text_area("Description", max_chars=500)
+        g_privacy = st.selectbox("Privacy", ["public", "private", "invite_only"])
+        g_max = st.number_input("Max Members", min_value=2, max_value=200, value=50)
+        g_submit = st.form_submit_button("Create Group")
+    if g_submit and g_name.strip():
+        coach_user_id = st.session_state.get("user_id", 1)
+        with session_scope() as s:
+            s.add(TrainingGroup(
+                name=g_name.strip(), description=g_desc, owner_user_id=coach_user_id,
+                privacy=g_privacy, max_members=g_max,
+            ))
+        st.success(f"Group '{g_name}' created.")
+        st.rerun()
+
+    # ── Add Members ──────────────────────────────────────────────────────
+    if groups:
+        st.subheader("Manage Memberships")
+        group_opts = {gname: gid for gid, gname, *_ in groups}
+        with session_scope() as s:
+            athletes = s.execute(
+                select(Athlete.id, Athlete.first_name, Athlete.last_name)
+                .where(Athlete.status == "active")
+                .order_by(Athlete.first_name)
+            ).all()
+        athlete_opts = {f"{first} {last}": aid for aid, first, last in athletes}
+
+        with st.form("add_member"):
+            sel_group = st.selectbox("Group", list(group_opts.keys()))
+            sel_athlete = st.selectbox("Athlete", list(athlete_opts.keys()) if athlete_opts else ["No athletes"])
+            sel_role = st.selectbox("Role", ["member", "admin"])
+            mem_submit = st.form_submit_button("Add to Group")
+        if mem_submit and sel_group in group_opts and sel_athlete in athlete_opts:
+            with session_scope() as s:
+                existing = s.execute(
+                    select(GroupMembership.id).where(
+                        GroupMembership.group_id == group_opts[sel_group],
+                        GroupMembership.athlete_id == athlete_opts[sel_athlete],
+                    )
+                ).first()
+                if existing:
+                    st.warning(f"{sel_athlete} is already in {sel_group}.")
+                else:
+                    s.add(GroupMembership(
+                        group_id=group_opts[sel_group],
+                        athlete_id=athlete_opts[sel_athlete],
+                        role=sel_role,
+                    ))
+                    st.success(f"Added {sel_athlete} to {sel_group}.")
+                    st.rerun()
+
+    # ── Challenges ───────────────────────────────────────────────────────
+    st.subheader("Challenges")
+    with session_scope() as s:
+        challenges = s.execute(
+            select(Challenge.id, Challenge.name, Challenge.challenge_type,
+                   Challenge.target_value, Challenge.start_date, Challenge.end_date, Challenge.status)
+            .order_by(Challenge.end_date.desc())
+        ).all()
+    if challenges:
+        ch_rows = []
+        for cid, cname, ctype, target, start, end, cstatus in challenges:
+            with session_scope() as s:
+                entry_count = len(s.execute(
+                    select(ChallengeEntry.id).where(ChallengeEntry.challenge_id == cid)
+                ).all())
+            ch_rows.append({
+                "Challenge": cname, "Type": ctype, "Target": target,
+                "Period": f"{start} → {end}", "Status": cstatus,
+                "Participants": entry_count,
+            })
+        st.dataframe(pd.DataFrame(ch_rows), use_container_width=True)
+    else:
+        st.info("No challenges created yet.")
+
+    # Create challenge form
+    with st.form("create_challenge"):
+        st.write("**Create Challenge**")
+        c_name = st.text_input("Challenge Name")
+        c_type = st.selectbox("Type", ["distance", "duration", "streak", "elevation"])
+        c_target = st.number_input("Target Value", min_value=1.0, value=50.0)
+        c_start = st.date_input("Start Date", value=date.today())
+        c_end = st.date_input("End Date", value=date.today() + timedelta(days=30))
+        c_group = st.selectbox(
+            "Group (optional)",
+            ["None"] + (list(group_opts.keys()) if groups else []),
+        ) if groups else "None"
+        c_submit = st.form_submit_button("Create Challenge")
+    if c_submit and c_name.strip():
+        coach_user_id = st.session_state.get("user_id", 1)
+        group_id = group_opts.get(c_group) if c_group != "None" else None
+        with session_scope() as s:
+            s.add(Challenge(
+                name=c_name.strip(), challenge_type=c_type, target_value=c_target,
+                start_date=c_start, end_date=c_end, created_by=coach_user_id,
+                group_id=group_id,
+            ))
+        st.success(f"Challenge '{c_name}' created.")
+        st.rerun()
 
 
 def coach_admin_tools() -> None:

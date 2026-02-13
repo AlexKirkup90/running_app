@@ -11,13 +11,19 @@ from core.db import session_scope
 from core.models import (
     Athlete,
     AthletePreference,
+    Challenge,
+    ChallengeEntry,
     CheckIn,
     Event,
+    GroupMembership,
+    GroupMessage,
+    Kudos,
     Plan,
     PlanDaySession,
     PlanWeek,
     SessionLibrary,
     SyncLog,
+    TrainingGroup,
     TrainingLog,
     WearableConnection,
 )
@@ -32,6 +38,11 @@ from core.services.session_engine import (
     pace_range_for_label,
 )
 from core.services.training_load import compute_session_load, compute_weekly_metrics, overtraining_risk
+from core.services.community import (
+    compute_challenge_progress,
+    compute_leaderboard,
+    compute_training_streak,
+)
 from core.services.vdot import RACE_DISTANCES_M, pace_display
 from core.services.wearables.sync import (
     build_training_log_dict,
@@ -640,6 +651,135 @@ def athlete_profile(athlete_id: int) -> None:
         st.caption("Recent Syncs")
         for svc, s_status, imported, skipped, started in sync_logs:
             st.caption(f"{svc.title()} — {s_status} | +{imported} imported, {skipped} skipped | {started:%Y-%m-%d %H:%M}")
+
+
+def athlete_community(athlete_id: int) -> None:
+    """Community page: groups, challenges, leaderboards, activity feed."""
+    st.header("Community")
+
+    # ── My Groups ────────────────────────────────────────────────────────
+    st.subheader("My Groups")
+    with session_scope() as s:
+        memberships = s.execute(
+            select(TrainingGroup.id, TrainingGroup.name, TrainingGroup.description, GroupMembership.role)
+            .join(GroupMembership, GroupMembership.group_id == TrainingGroup.id)
+            .where(GroupMembership.athlete_id == athlete_id)
+            .order_by(TrainingGroup.name)
+        ).all()
+
+    if memberships:
+        for gid, gname, gdesc, grole in memberships:
+            with st.expander(f"{gname} ({grole})"):
+                st.write(gdesc or "No description.")
+                _show_group_feed(gid, athlete_id)
+                _show_group_leaderboard(gid)
+    else:
+        st.info("You haven't joined any training groups yet.")
+
+    # ── Active Challenges ────────────────────────────────────────────────
+    st.subheader("Active Challenges")
+    with session_scope() as s:
+        challenges = s.execute(
+            select(Challenge.id, Challenge.name, Challenge.challenge_type,
+                   Challenge.target_value, Challenge.start_date, Challenge.end_date,
+                   ChallengeEntry.progress, ChallengeEntry.completed)
+            .join(ChallengeEntry, ChallengeEntry.challenge_id == Challenge.id)
+            .where(ChallengeEntry.athlete_id == athlete_id, Challenge.status == "active")
+            .order_by(Challenge.end_date)
+        ).all()
+
+    if challenges:
+        for cid, cname, ctype, target, start, end, progress, completed in challenges:
+            prog = compute_challenge_progress(progress, target, end)
+            status_icon = "white_check_mark" if completed else "hourglass_flowing_sand"
+            st.write(f":{status_icon}: **{cname}** — {ctype}")
+            st.progress(min(prog.pct / 100, 1.0), text=f"{prog.current:.1f} / {target:.1f} ({prog.pct:.0f}%)")
+            if prog.days_remaining > 0 and not completed:
+                st.caption(f"{prog.days_remaining} days remaining")
+    else:
+        st.info("No active challenges.")
+
+    # ── Training Streak ──────────────────────────────────────────────────
+    st.subheader("Training Streak")
+    with session_scope() as s:
+        log_dates = [
+            row[0] for row in s.execute(
+                select(TrainingLog.date).where(TrainingLog.athlete_id == athlete_id).order_by(TrainingLog.date.desc()).limit(90)
+            ).all()
+        ]
+    streak = compute_training_streak(log_dates)
+    st.metric("Current Streak", f"{streak} day{'s' if streak != 1 else ''}")
+
+    # ── Kudos Received ───────────────────────────────────────────────────
+    with session_scope() as s:
+        kudos_count = len(s.execute(
+            select(Kudos.id).where(Kudos.to_athlete_id == athlete_id)
+        ).all())
+    st.metric("Kudos Received", kudos_count)
+
+
+def _show_group_feed(group_id: int, athlete_id: int) -> None:
+    """Show recent activity feed for a group."""
+    with session_scope() as s:
+        messages = s.execute(
+            select(GroupMessage.content, GroupMessage.message_type,
+                   GroupMessage.created_at, Athlete.first_name, Athlete.last_name)
+            .join(Athlete, Athlete.id == GroupMessage.author_athlete_id)
+            .where(GroupMessage.group_id == group_id)
+            .order_by(GroupMessage.id.desc())
+            .limit(10)
+        ).all()
+    if messages:
+        for content, mtype, created, first, last in messages:
+            prefix = "" if mtype == "text" else f"[{mtype}] "
+            st.caption(f"{first} {last} — {prefix}{content} ({created:%H:%M})")
+
+    # Quick message form
+    msg = st.text_input("Post a message", key=f"msg_{group_id}")
+    if msg and st.button("Send", key=f"send_{group_id}"):
+        with session_scope() as s:
+            s.add(GroupMessage(group_id=group_id, author_athlete_id=athlete_id, content=msg))
+        st.rerun()
+
+
+def _show_group_leaderboard(group_id: int) -> None:
+    """Show weekly distance leaderboard for a group."""
+    today = date.today()
+    week_start = today - timedelta(days=today.weekday())
+    with session_scope() as s:
+        member_ids = [
+            row[0] for row in s.execute(
+                select(GroupMembership.athlete_id).where(GroupMembership.group_id == group_id)
+            ).all()
+        ]
+        if not member_ids:
+            return
+        from sqlalchemy import func
+        rows = s.execute(
+            select(
+                TrainingLog.athlete_id,
+                func.sum(TrainingLog.distance_km).label("total_km"),
+                func.sum(TrainingLog.duration_min).label("total_min"),
+                func.count(TrainingLog.id).label("sessions"),
+            )
+            .where(TrainingLog.athlete_id.in_(member_ids), TrainingLog.date >= week_start)
+            .group_by(TrainingLog.athlete_id)
+        ).all()
+        names = {
+            row[0]: f"{row[1]} {row[2]}" for row in s.execute(
+                select(Athlete.id, Athlete.first_name, Athlete.last_name)
+                .where(Athlete.id.in_(member_ids))
+            ).all()
+        }
+    if rows:
+        log_data = [
+            {"athlete_id": aid, "name": names.get(aid, "?"), "distance_km": float(km or 0),
+             "duration_min": int(mins or 0), "sessions_count": int(ct)}
+            for aid, km, mins, ct in rows
+        ]
+        lb = compute_leaderboard(log_data, metric="distance")
+        for entry in lb:
+            st.caption(f"#{entry.rank} {entry.name} — {entry.value:.1f} km")
 
 
 def _trigger_wearable_sync(athlete_id: int, connection_id: int, service: str) -> None:

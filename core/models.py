@@ -297,5 +297,74 @@ class SyncLog(Base):
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
 
 
+# ── Community & Social ────────────────────────────────────────────────────
+
+
+class TrainingGroup(Base):
+    __tablename__ = "training_groups"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(140), nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="")
+    owner_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    privacy: Mapped[str] = mapped_column(String(20), default="public")  # public, private, invite_only
+    max_members: Mapped[int] = mapped_column(Integer, default=50)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class GroupMembership(Base):
+    __tablename__ = "group_memberships"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    group_id: Mapped[int] = mapped_column(ForeignKey("training_groups.id"), index=True)
+    athlete_id: Mapped[int] = mapped_column(ForeignKey("athletes.id"), index=True)
+    role: Mapped[str] = mapped_column(String(20), default="member")  # member, admin
+    joined_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    __table_args__ = (UniqueConstraint("group_id", "athlete_id", name="uq_group_member"),)
+
+
+class Challenge(Base):
+    __tablename__ = "challenges"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    group_id: Mapped[Optional[int]] = mapped_column(ForeignKey("training_groups.id"))
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    challenge_type: Mapped[str] = mapped_column(String(40), nullable=False)  # distance, duration, streak, elevation
+    target_value: Mapped[float] = mapped_column(Float, nullable=False)  # km, minutes, days, meters
+    start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="active")  # active, completed, cancelled
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class ChallengeEntry(Base):
+    __tablename__ = "challenge_entries"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    challenge_id: Mapped[int] = mapped_column(ForeignKey("challenges.id"), index=True)
+    athlete_id: Mapped[int] = mapped_column(ForeignKey("athletes.id"), index=True)
+    progress: Mapped[float] = mapped_column(Float, default=0)
+    completed: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_updated: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    __table_args__ = (UniqueConstraint("challenge_id", "athlete_id", name="uq_challenge_entry"),)
+
+
+class GroupMessage(Base):
+    __tablename__ = "group_messages"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    group_id: Mapped[int] = mapped_column(ForeignKey("training_groups.id"), index=True)
+    author_athlete_id: Mapped[int] = mapped_column(ForeignKey("athletes.id"))
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    message_type: Mapped[str] = mapped_column(String(20), default="text")  # text, achievement, kudos
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class Kudos(Base):
+    __tablename__ = "kudos"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    from_athlete_id: Mapped[int] = mapped_column(ForeignKey("athletes.id"), index=True)
+    to_athlete_id: Mapped[int] = mapped_column(ForeignKey("athletes.id"), index=True)
+    training_log_id: Mapped[Optional[int]] = mapped_column(ForeignKey("training_logs.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    __table_args__ = (UniqueConstraint("from_athlete_id", "to_athlete_id", "training_log_id", name="uq_kudos"),)
+
+
 Index("ix_logs_athlete_date", TrainingLog.athlete_id, TrainingLog.date)
 Index("ix_intervention_open", CoachIntervention.athlete_id, CoachIntervention.action_type, unique=False, postgresql_where=(CoachIntervention.status == "open"))

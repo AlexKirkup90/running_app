@@ -399,6 +399,48 @@ def delete_webhook(hook_id: str, coach: Annotated[TokenData, Depends(require_coa
     return MessageOut(message="Webhook deleted")
 
 
+# ── Community ─────────────────────────────────────────────────────────────
+
+@router.get("/groups", tags=["community"])
+def list_groups(current_user: Annotated[TokenData, Depends(get_current_user)]):
+    """List training groups. Athletes see their groups; coaches see all."""
+    from core.models import GroupMembership, TrainingGroup
+    with session_scope() as s:
+        if current_user.role == "client":
+            rows = s.execute(
+                select(TrainingGroup)
+                .join(GroupMembership, GroupMembership.group_id == TrainingGroup.id)
+                .where(GroupMembership.athlete_id == current_user.athlete_id)
+            ).scalars().all()
+        else:
+            rows = s.execute(select(TrainingGroup).order_by(TrainingGroup.name)).scalars().all()
+        return [
+            {"id": g.id, "name": g.name, "description": g.description,
+             "privacy": g.privacy, "max_members": g.max_members}
+            for g in rows
+        ]
+
+
+@router.get("/challenges", tags=["community"])
+def list_challenges(
+    current_user: Annotated[TokenData, Depends(get_current_user)],
+    status_filter: str = Query("active", alias="status"),
+):
+    """List challenges. Active by default."""
+    from core.models import Challenge
+    with session_scope() as s:
+        q = select(Challenge)
+        if status_filter != "all":
+            q = q.where(Challenge.status == status_filter)
+        rows = s.execute(q.order_by(Challenge.end_date)).scalars().all()
+        return [
+            {"id": c.id, "name": c.name, "challenge_type": c.challenge_type,
+             "target_value": c.target_value, "start_date": str(c.start_date),
+             "end_date": str(c.end_date), "status": c.status}
+            for c in rows
+        ]
+
+
 # ── Wearable Connections ──────────────────────────────────────────────────
 
 @router.get("/wearables/connections", tags=["wearables"])
