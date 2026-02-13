@@ -399,6 +399,60 @@ def delete_webhook(hook_id: str, coach: Annotated[TokenData, Depends(require_coa
     return MessageOut(message="Webhook deleted")
 
 
+# ── Organizations ─────────────────────────────────────────────────────────
+
+@router.get("/organizations", tags=["organizations"])
+def list_organizations(coach: Annotated[TokenData, Depends(require_coach)]):
+    """List organizations the coach belongs to."""
+    from core.models import OrgMembership, Organization
+    with session_scope() as s:
+        rows = s.execute(
+            select(Organization, OrgMembership.org_role)
+            .join(OrgMembership, OrgMembership.org_id == Organization.id)
+            .where(OrgMembership.user_id == coach.user_id)
+        ).all()
+        return [
+            {"id": org.id, "name": org.name, "tier": org.tier, "role": role,
+             "max_coaches": org.max_coaches, "max_athletes": org.max_athletes}
+            for org, role in rows
+        ]
+
+
+@router.get("/organizations/{org_id}/coaches", tags=["organizations"])
+def list_org_coaches(org_id: int, coach: Annotated[TokenData, Depends(require_coach)]):
+    """List coaches in an organization."""
+    from core.models import OrgMembership
+    with session_scope() as s:
+        rows = s.execute(
+            select(OrgMembership.user_id, OrgMembership.org_role, OrgMembership.caseload_cap,
+                   User.username)
+            .join(User, User.id == OrgMembership.user_id)
+            .where(OrgMembership.org_id == org_id)
+        ).all()
+        return [
+            {"user_id": uid, "username": uname, "role": role, "caseload_cap": cap}
+            for uid, role, cap, uname in rows
+        ]
+
+
+@router.get("/organizations/{org_id}/assignments", tags=["organizations"])
+def list_org_assignments(org_id: int, coach: Annotated[TokenData, Depends(require_coach)]):
+    """List athlete-coach assignments in an organization."""
+    from core.models import CoachAssignment
+    with session_scope() as s:
+        rows = s.execute(
+            select(CoachAssignment.coach_user_id, CoachAssignment.athlete_id,
+                   CoachAssignment.status, Athlete.first_name, Athlete.last_name)
+            .join(Athlete, Athlete.id == CoachAssignment.athlete_id)
+            .where(CoachAssignment.org_id == org_id, CoachAssignment.status == "active")
+        ).all()
+        return [
+            {"coach_user_id": cuid, "athlete_id": aid, "status": s,
+             "athlete_name": f"{first} {last}"}
+            for cuid, aid, s, first, last in rows
+        ]
+
+
 # ── Community ─────────────────────────────────────────────────────────────
 
 @router.get("/groups", tags=["community"])

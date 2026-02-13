@@ -16,11 +16,14 @@ from core.models import (
     ChallengeEntry,
     CheckIn,
     CoachActionLog,
+    CoachAssignment,
     CoachIntervention,
     CoachNotesTask,
     Event,
     GroupMembership,
     ImportRun,
+    OrgMembership,
+    Organization,
     Plan,
     PlanDaySession,
     PlanWeek,
@@ -1500,6 +1503,189 @@ def coach_community() -> None:
             ))
         st.success(f"Challenge '{c_name}' created.")
         st.rerun()
+
+
+def coach_org_management() -> None:
+    """Organization and team management page."""
+    from core.services.team import TIER_LIMITS
+
+    st.header("Organization & Team")
+    coach_user_id = st.session_state.get("user_id", 1)
+
+    # ── My Organizations ─────────────────────────────────────────────────
+    st.subheader("Organizations")
+    with session_scope() as s:
+        my_orgs = s.execute(
+            select(Organization.id, Organization.name, Organization.tier,
+                   Organization.max_coaches, Organization.max_athletes,
+                   OrgMembership.org_role)
+            .join(OrgMembership, OrgMembership.org_id == Organization.id)
+            .where(OrgMembership.user_id == coach_user_id)
+            .order_by(Organization.name)
+        ).all()
+
+    if my_orgs:
+        for org_id, org_name, tier, max_c, max_a, my_role in my_orgs:
+            with st.expander(f"{org_name} ({tier}) — Your role: {my_role}"):
+                _show_org_detail(org_id, org_name, tier, max_c, max_a, my_role, coach_user_id)
+    else:
+        st.info("You are not a member of any organization.")
+
+    # ── Create Organization ──────────────────────────────────────────────
+    st.subheader("Create Organization")
+    with st.form("create_org"):
+        org_name = st.text_input("Organization Name")
+        org_tier = st.selectbox("Tier", list(TIER_LIMITS.keys()))
+        org_submit = st.form_submit_button("Create")
+    if org_submit and org_name.strip():
+        slug = org_name.strip().lower().replace(" ", "-")
+        with session_scope() as s:
+            existing = s.execute(select(Organization.id).where(Organization.slug == slug)).first()
+            if existing:
+                st.warning("An organization with that name already exists.")
+            else:
+                org = Organization(
+                    name=org_name.strip(), slug=slug, tier=org_tier,
+                    max_coaches=TIER_LIMITS[org_tier]["max_coaches"],
+                    max_athletes=TIER_LIMITS[org_tier]["max_athletes"],
+                )
+                s.add(org)
+                s.flush()
+                s.add(OrgMembership(org_id=org.id, user_id=coach_user_id, org_role="owner"))
+                st.success(f"Organization '{org_name}' created. You are the owner.")
+                st.rerun()
+
+
+def _show_org_detail(org_id, org_name, tier, max_c, max_a, my_role, coach_user_id):
+    """Show details for a single organization."""
+    from core.services.team import (
+        check_tier_limit,
+        compute_coach_capacity,
+        compute_org_summary,
+        suggest_rebalance,
+    )
+
+    with session_scope() as s:
+        # Get all coaches in org
+        coaches = s.execute(
+            select(OrgMembership.user_id, OrgMembership.org_role, OrgMembership.caseload_cap,
+                   User.username)
+            .join(User, User.id == OrgMembership.user_id)
+            .where(OrgMembership.org_id == org_id)
+            .order_by(OrgMembership.org_role.desc())
+        ).all()
+
+        # Get athlete assignments
+        assignments = s.execute(
+            select(CoachAssignment.coach_user_id, CoachAssignment.athlete_id,
+                   Athlete.first_name, Athlete.last_name)
+            .join(Athlete, Athlete.id == CoachAssignment.athlete_id)
+            .where(CoachAssignment.org_id == org_id, CoachAssignment.status == "active")
+        ).all()
+
+    # Build capacity info
+    assignment_counts: dict[int, int] = {}
+    for a_coach_id, *_ in assignments:
+        assignment_counts[a_coach_id] = assignment_counts.get(a_coach_id, 0) + 1
+
+    capacities = []
+    coach_rows = []
+    for uid, role, cap, username in coaches:
+        count = assignment_counts.get(uid, 0)
+        cc = compute_coach_capacity(uid, username, role, count, cap)
+        capacities.append(cc)
+        coach_rows.append({
+            "Coach": username, "Role": role,
+            "Athletes": f"{count}/{cap}",
+            "Utilization": f"{cc.utilization_pct:.0f}%",
+        })
+
+    if coach_rows:
+        st.write("**Team**")
+        st.dataframe(pd.DataFrame(coach_rows), use_container_width=True)
+
+    # Org summary
+    total_athletes = len({a_id for _, a_id, *_ in assignments})
+    summary = compute_org_summary(org_id, org_name, tier, max_c, max_a, capacities, total_athletes)
+    st.caption(
+        f"Coaches: {summary.total_coaches}/{max_c} | "
+        f"Athletes: {summary.total_athletes}/{max_a} | "
+        f"Avg utilization: {summary.avg_utilization_pct:.0f}%"
+    )
+
+    # Rebalance suggestions
+    suggestions = suggest_rebalance(capacities)
+    if suggestions:
+        st.write("**Rebalance Suggestions**")
+        for sug in suggestions:
+            st.caption(f"Transfer: {sug['reason']}")
+
+    # ── Add Coach ────────────────────────────────────────────────────────
+    if my_role in ("owner", "head_coach"):
+        with st.form(f"add_coach_{org_id}"):
+            st.write("**Add Coach to Organization**")
+            with session_scope() as s:
+                available_coaches = s.execute(
+                    select(User.id, User.username).where(User.role == "coach").order_by(User.username)
+                ).all()
+            coach_opts = {uname: uid for uid, uname in available_coaches}
+            sel_coach = st.selectbox("Coach", list(coach_opts.keys()) if coach_opts else ["No coaches available"])
+            sel_role = st.selectbox("Role", ["assistant", "coach", "head_coach"])
+            sel_cap = st.number_input("Caseload Cap", min_value=1, max_value=100, value=20)
+            ac_submit = st.form_submit_button("Add Coach")
+        if ac_submit and sel_coach in coach_opts:
+            if not check_tier_limit(tier, len(coaches), "max_coaches"):
+                st.warning(f"Coach limit reached for {tier} tier ({max_c} max).")
+            else:
+                with session_scope() as s:
+                    existing = s.execute(
+                        select(OrgMembership.id).where(
+                            OrgMembership.org_id == org_id,
+                            OrgMembership.user_id == coach_opts[sel_coach],
+                        )
+                    ).first()
+                    if existing:
+                        st.warning(f"{sel_coach} is already in this organization.")
+                    else:
+                        s.add(OrgMembership(
+                            org_id=org_id, user_id=coach_opts[sel_coach],
+                            org_role=sel_role, caseload_cap=sel_cap,
+                        ))
+                        st.success(f"Added {sel_coach} as {sel_role}.")
+                        st.rerun()
+
+    # ── Assign Athlete ───────────────────────────────────────────────────
+    if my_role in ("owner", "head_coach"):
+        with st.form(f"assign_athlete_{org_id}"):
+            st.write("**Assign Athlete to Coach**")
+            coach_map = {uname: uid for uid, _, _, uname in coaches}
+            with session_scope() as s:
+                all_athletes = s.execute(
+                    select(Athlete.id, Athlete.first_name, Athlete.last_name)
+                    .where(Athlete.status == "active")
+                    .order_by(Athlete.first_name)
+                ).all()
+            ath_opts = {f"{first} {last}": aid for aid, first, last in all_athletes}
+            sel_ath = st.selectbox("Athlete", list(ath_opts.keys()) if ath_opts else ["No athletes"])
+            sel_to_coach = st.selectbox("Assign to Coach", list(coach_map.keys()))
+            assign_submit = st.form_submit_button("Assign")
+        if assign_submit and sel_ath in ath_opts and sel_to_coach in coach_map:
+            with session_scope() as s:
+                existing = s.execute(
+                    select(CoachAssignment.id).where(
+                        CoachAssignment.org_id == org_id,
+                        CoachAssignment.athlete_id == ath_opts[sel_ath],
+                    )
+                ).first()
+                if existing:
+                    st.warning(f"{sel_ath} is already assigned in this organization.")
+                else:
+                    s.add(CoachAssignment(
+                        org_id=org_id, coach_user_id=coach_map[sel_to_coach],
+                        athlete_id=ath_opts[sel_ath],
+                    ))
+                    st.success(f"Assigned {sel_ath} to {sel_to_coach}.")
+                    st.rerun()
 
 
 def coach_admin_tools() -> None:

@@ -366,5 +366,41 @@ class Kudos(Base):
     __table_args__ = (UniqueConstraint("from_athlete_id", "to_athlete_id", "training_log_id", name="uq_kudos"),)
 
 
+# ── Team & Organization ──────────────────────────────────────────────────
+
+
+class Organization(Base):
+    __tablename__ = "organizations"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
+    slug: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+    tier: Mapped[str] = mapped_column(String(30), default="free")  # free, pro, enterprise
+    max_coaches: Mapped[int] = mapped_column(Integer, default=1)
+    max_athletes: Mapped[int] = mapped_column(Integer, default=20)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class OrgMembership(Base):
+    __tablename__ = "org_memberships"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    org_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    org_role: Mapped[str] = mapped_column(String(30), nullable=False)  # owner, head_coach, coach, assistant
+    caseload_cap: Mapped[int] = mapped_column(Integer, default=20)
+    joined_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    __table_args__ = (UniqueConstraint("org_id", "user_id", name="uq_org_user"),)
+
+
+class CoachAssignment(Base):
+    __tablename__ = "coach_assignments"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    org_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), index=True)
+    coach_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    athlete_id: Mapped[int] = mapped_column(ForeignKey("athletes.id"), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="active")  # active, paused, transferred
+    assigned_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    __table_args__ = (UniqueConstraint("org_id", "athlete_id", name="uq_org_athlete_assignment"),)
+
+
 Index("ix_logs_athlete_date", TrainingLog.athlete_id, TrainingLog.date)
 Index("ix_intervention_open", CoachIntervention.athlete_id, CoachIntervention.action_type, unique=False, postgresql_where=(CoachIntervention.status == "open"))
