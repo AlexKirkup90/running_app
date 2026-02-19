@@ -1,11 +1,7 @@
 import { useMemo } from "react";
 import { Link } from "react-router-dom";
 import { useAuthStore } from "@/stores/auth";
-import {
-  useCheckins,
-  useTrainingLogs,
-  useRecommendation,
-} from "@/hooks/useAthlete";
+import { useCheckins, useTrainingLogs } from "@/hooks/useAthlete";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -13,7 +9,6 @@ import {
   Activity,
   ClipboardCheck,
   Dumbbell,
-  Lightbulb,
 } from "lucide-react";
 
 function bandColor(band: string | null) {
@@ -38,7 +33,6 @@ export function AthleteDashboard() {
     athleteId ?? 0,
     5,
   );
-  const { data: recommendation } = useRecommendation(athleteId ?? 0);
 
   const today = new Date().toISOString().slice(0, 10);
 
@@ -121,6 +115,7 @@ export function AthleteDashboard() {
 
       {/* Quick Stats */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        {/* Quick Stats */}
         <Card>
           <CardContent className="flex items-center gap-4 p-6">
             <div className="rounded-lg bg-muted p-2 text-blue-600">
@@ -164,41 +159,17 @@ export function AthleteDashboard() {
         <Card>
           <CardContent className="flex items-center gap-4 p-6">
             <div className="rounded-lg bg-muted p-2 text-amber-600">
-              <Lightbulb className="h-5 w-5" />
+              <Activity className="h-5 w-5" />
             </div>
             <div>
-              <p className="text-sm text-muted-foreground">Recommendation</p>
-              <p className="text-sm font-medium truncate max-w-[140px]">
-                {recommendation?.action ?? "—"}
+              <p className="text-sm text-muted-foreground">Training Today</p>
+              <p className="text-lg font-bold">
+                {todayCheckin?.training_today ? "Yes" : "—"}
               </p>
             </div>
           </CardContent>
         </Card>
       </div>
-
-      {/* Recommendation detail */}
-      {recommendation && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Coach Recommendation</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            <p className="font-medium">{recommendation.action}</p>
-            {recommendation.why.length > 0 && (
-              <ul className="list-inside list-disc text-sm text-muted-foreground">
-                {recommendation.why.map((reason, i) => (
-                  <li key={i}>{reason}</li>
-                ))}
-              </ul>
-            )}
-            {!recommendation.guardrail_pass && (
-              <p className="text-sm text-destructive">
-                Guardrail: {recommendation.guardrail_reason}
-              </p>
-            )}
-          </CardContent>
-        </Card>
-      )}
 
       <div className="grid gap-6 lg:grid-cols-2">
         {/* Recent Check-ins */}
