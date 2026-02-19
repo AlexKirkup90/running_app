@@ -156,35 +156,44 @@ def seed_users_athletes() -> None:
                 s.add(User(username=f"athlete{idx}", role="client", athlete_id=athlete.id, password_hash=hash_password("AthletePass!234"), must_change_password=False))
                 s.add(AthletePreference(athlete_id=athlete.id, reminder_training_days=["Mon", "Tue", "Thu", "Sat"], privacy_ack=True, automation_mode="assisted", auto_apply_low_risk=True))
 
-                plan = Plan(athlete_id=athlete.id, race_goal=goal, weeks=24, sessions_per_week=4, max_session_min=140, start_date=date.today() - timedelta(days=28))
-                s.add(plan)
+            # Skip plan creation if athlete already has an active plan
+            existing_plan = s.execute(select(Plan.id).where(Plan.athlete_id == athlete.id, Plan.status == "active")).first()
+            if existing_plan:
+                continue
+
+            goal = race_goals[idx - 1]
+            plan = Plan(athlete_id=athlete.id, race_goal=goal, weeks=24, sessions_per_week=4, max_session_min=140, start_date=date.today() - timedelta(days=28))
+            s.add(plan)
+            s.flush()
+            weeks = generate_plan_weeks(plan.start_date, plan.weeks, plan.race_goal, plan.sessions_per_week, plan.max_session_min)
+            seen_days: set[tuple[int, date]] = set()
+            for w in weeks:
+                week = PlanWeek(plan_id=plan.id, **w)
+                s.add(week)
                 s.flush()
-                weeks = generate_plan_weeks(plan.start_date, plan.weeks, plan.race_goal, plan.sessions_per_week, plan.max_session_min)
-                for w in weeks:
-                    week = PlanWeek(plan_id=plan.id, **w)
-                    s.add(week)
-                    s.flush()
-                    assignments = assign_week_sessions(week.week_start, week.sessions_order)
-                    s.add_all(
-                        [
-                            PlanDaySession(
-                                plan_week_id=week.id,
-                                athlete_id=athlete.id,
-                                session_day=a["session_day"],
-                                session_name=a["session_name"],
-                                source_template_name=a["session_name"],
-                                status="planned",
-                            )
-                            for a in assignments
-                        ]
+                assignments = assign_week_sessions(week.week_start, week.sessions_order)
+                for a in assignments:
+                    key = (athlete.id, a["session_day"])
+                    if key in seen_days:
+                        continue
+                    seen_days.add(key)
+                    s.add(
+                        PlanDaySession(
+                            plan_week_id=week.id,
+                            athlete_id=athlete.id,
+                            session_day=a["session_day"],
+                            session_name=a["session_name"],
+                            source_template_name=a["session_name"],
+                            status="planned",
+                        )
                     )
 
-                s.add(Event(athlete_id=athlete.id, name=f"Goal {plan.race_goal}", event_date=date.today() + timedelta(days=120), distance=plan.race_goal))
-                for d in range(21):
-                    log_date = date.today() - timedelta(days=d)
-                    s.add(TrainingLog(athlete_id=athlete.id, date=log_date, session_category="Easy Run", duration_min=35 + d % 4 * 5, distance_km=6 + d % 3, rpe=4 + d % 4, load_score=30 + d % 15))
-                    if d % 2 == 0:
-                        s.add(CheckIn(athlete_id=athlete.id, day=log_date, sleep=3 + d % 2, energy=3, recovery=3, stress=2 + d % 2, training_today=True))
+            s.add(Event(athlete_id=athlete.id, name=f"Goal {plan.race_goal}", event_date=date.today() + timedelta(days=120), distance=plan.race_goal))
+            for d in range(21):
+                log_date = date.today() - timedelta(days=d)
+                s.add(TrainingLog(athlete_id=athlete.id, date=log_date, session_category="Easy Run", duration_min=35 + d % 4 * 5, distance_km=6 + d % 3, rpe=4 + d % 4, load_score=30 + d % 15))
+                if d % 2 == 0:
+                    s.add(CheckIn(athlete_id=athlete.id, day=log_date, sleep=3 + d % 2, energy=3, recovery=3, stress=2 + d % 2, training_today=True))
 
 
 def backfill_plan_day_sessions() -> None:
@@ -199,19 +208,25 @@ def backfill_plan_day_sessions() -> None:
             if not isinstance(sessions_order, list) or not sessions_order:
                 continue
             assignments = assign_week_sessions(week_start, sessions_order)
-            s.add_all(
-                [
-                    PlanDaySession(
-                        plan_week_id=week_id,
-                        athlete_id=athlete_id,
-                        session_day=a["session_day"],
-                        session_name=a["session_name"],
-                        source_template_name=a["session_name"],
-                        status="planned",
-                    )
-                    for a in assignments
-                ]
-            )
+            try:
+                nested = s.begin_nested()
+                s.add_all(
+                    [
+                        PlanDaySession(
+                            plan_week_id=week_id,
+                            athlete_id=athlete_id,
+                            session_day=a["session_day"],
+                            session_name=a["session_name"],
+                            source_template_name=a["session_name"],
+                            status="planned",
+                        )
+                        for a in assignments
+                    ]
+                )
+                s.flush()
+                nested.commit()
+            except Exception:
+                nested.rollback()
 
 
 def main() -> None:
