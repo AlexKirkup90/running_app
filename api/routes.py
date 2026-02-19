@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, timedelta
-from typing import Annotated
+from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.security import OAuth2PasswordRequestForm
@@ -272,7 +272,7 @@ async def create_checkin(body: CheckInInput, athlete: Annotated[TokenData, Depen
 @router.get("/checkins", response_model=list[CheckInOut], tags=["checkins"])
 def list_checkins(
     current_user: Annotated[TokenData, Depends(get_current_user)],
-    athlete_id: int | None = None,
+    athlete_id: Optional[int] = None,
     limit: int = Query(30, le=200),
 ):
     """List check-ins. Athletes see their own; coaches can query by athlete_id."""
@@ -330,7 +330,7 @@ async def create_training_log(body: TrainingLogInput, athlete: Annotated[TokenDa
 @router.get("/training-logs", response_model=list[TrainingLogOut], tags=["training-logs"])
 def list_training_logs(
     current_user: Annotated[TokenData, Depends(get_current_user)],
-    athlete_id: int | None = None,
+    athlete_id: Optional[int] = None,
     limit: int = Query(30, le=200),
 ):
     """List training logs. Athletes see their own; coaches can query by athlete_id."""
@@ -357,7 +357,7 @@ def create_event(body: EventCreateInput, athlete: Annotated[TokenData, Depends(r
 @router.get("/events", response_model=list[EventOut], tags=["events"])
 def list_events(
     current_user: Annotated[TokenData, Depends(get_current_user)],
-    athlete_id: int | None = None,
+    athlete_id: Optional[int] = None,
 ):
     """List events. Athletes see their own; coaches can query by athlete_id."""
     target_id = _resolve_athlete_id(current_user, athlete_id)
@@ -373,7 +373,7 @@ def list_events(
 @router.get("/plans", response_model=list[PlanOut], tags=["plans"])
 def list_plans(
     current_user: Annotated[TokenData, Depends(get_current_user)],
-    athlete_id: int | None = None,
+    athlete_id: Optional[int] = None,
     status_filter: str = Query("active", alias="status"),
 ):
     """List training plans. Athletes see their own; coaches see all."""
@@ -426,7 +426,7 @@ def get_plan_sessions(plan_id: int, current_user: Annotated[TokenData, Depends(g
 def list_interventions(
     coach: Annotated[TokenData, Depends(require_coach)],
     status_filter: str = Query("open", alias="status"),
-    athlete_id: int | None = None,
+    athlete_id: Optional[int] = None,
 ):
     """List interventions. Coach-only."""
     with session_scope() as s:
@@ -638,7 +638,7 @@ def delete_wearable_connection(connection_id: int, current_user: Annotated[Token
 @router.get("/wearables/sync-logs", tags=["wearables"])
 def list_sync_logs(
     current_user: Annotated[TokenData, Depends(get_current_user)],
-    athlete_id: int | None = None,
+    athlete_id: Optional[int] = None,
     limit: int = Query(20, le=100),
 ):
     """List sync logs. Athletes see their own; coaches can filter by athlete_id."""
@@ -661,7 +661,7 @@ def list_sync_logs(
 
 # ── Helpers ───────────────────────────────────────────────────────────────
 
-def _resolve_athlete_id(current_user: TokenData, requested_id: int | None) -> int:
+def _resolve_athlete_id(current_user: TokenData, requested_id: Optional[int]) -> int:
     """Resolve the target athlete ID based on role and request."""
     if current_user.role == "client":
         return current_user.athlete_id

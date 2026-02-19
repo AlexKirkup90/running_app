@@ -10,7 +10,7 @@ import hashlib
 import hmac
 import json
 import logging
-from typing import Any
+from typing import Any, Optional
 from uuid import uuid4
 
 import httpx
@@ -30,7 +30,7 @@ VALID_EVENTS = {
 }
 
 
-def register_webhook(url: str, events: list[str], secret: str | None = None) -> dict:
+def register_webhook(url: str, events: list[str], secret: Optional[str] = None) -> dict:
     """Register a new webhook endpoint for specified events."""
     invalid = set(events) - VALID_EVENTS
     if invalid:

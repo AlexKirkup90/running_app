@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Annotated
+from typing import Annotated, Optional
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
@@ -24,14 +24,14 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
     role: str
     user_id: int
-    athlete_id: int | None = None
+    athlete_id: Optional[int] = None
 
 
 class TokenData(BaseModel):
     user_id: int
     username: str
     role: str
-    athlete_id: int | None = None
+    athlete_id: Optional[int] = None
 
 
 def create_access_token(data: dict) -> str:
@@ -42,7 +42,7 @@ def create_access_token(data: dict) -> str:
     return jwt.encode(to_encode, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
 
-def authenticate_user(username: str, password: str) -> User | None:
+def authenticate_user(username: str, password: str) -> Optional[User]:
     """Verify credentials and return User if valid, None otherwise."""
     with session_scope() as s:
         user = s.execute(select(User).where(User.username == username)).scalar_one_or_none()
