@@ -1831,19 +1831,19 @@ def coach_vdot_calculator() -> None:
             st.subheader(f"Training Paces for VDOT {vdot_val:.1f}")
 
             pace_data = [
-                {"Pace Type": "E (Easy)", "Label": "E", "Pace": pace_display(paces.E),
+                {"Pace Type": "E (Easy)", "Label": "E", "Pace": pace_display(paces.easy),
                  "Band": pace_range_display(*daniels_pace_band("E", vdot_val)),
                  "Purpose": "Aerobic development, recovery. Most daily running."},
-                {"Pace Type": "M (Marathon)", "Label": "M", "Pace": pace_display(paces.M),
+                {"Pace Type": "M (Marathon)", "Label": "M", "Pace": pace_display(paces.marathon),
                  "Band": pace_range_display(*daniels_pace_band("M", vdot_val)),
                  "Purpose": "Marathon-specific endurance. Long run segments."},
-                {"Pace Type": "T (Threshold)", "Label": "T", "Pace": pace_display(paces.T),
+                {"Pace Type": "T (Threshold)", "Label": "T", "Pace": pace_display(paces.threshold),
                  "Band": pace_range_display(*daniels_pace_band("T", vdot_val)),
                  "Purpose": "Lactate clearance. Tempo runs, cruise intervals."},
-                {"Pace Type": "I (Interval)", "Label": "I", "Pace": pace_display(paces.I),
+                {"Pace Type": "I (Interval)", "Label": "I", "Pace": pace_display(paces.interval),
                  "Band": pace_range_display(*daniels_pace_band("I", vdot_val)),
                  "Purpose": "VO2max stimulus. 3-5 min work intervals."},
-                {"Pace Type": "R (Repetition)", "Label": "R", "Pace": pace_display(paces.R),
+                {"Pace Type": "R (Repetition)", "Label": "R", "Pace": pace_display(paces.repetition),
                  "Band": pace_range_display(*daniels_pace_band("R", vdot_val)),
                  "Purpose": "Speed & running economy. Short, fast reps."},
             ]
@@ -1853,7 +1853,7 @@ def coach_vdot_calculator() -> None:
             st.subheader("Pace Reference")
             ref_cols = st.columns(5)
             labels = ["E", "M", "T", "I", "R"]
-            sec_values = [paces.E, paces.M, paces.T, paces.I, paces.R]
+            sec_values = [paces.easy, paces.marathon, paces.threshold, paces.interval, paces.repetition]
             for col, label, sec_km in zip(ref_cols, labels, sec_values):
                 mile_sec = sec_km * 1.60934
                 col.metric(label, pace_display(sec_km), delta=f"{pace_display(mile_sec)} /mi")
@@ -1866,11 +1866,11 @@ def coach_vdot_calculator() -> None:
             p = get_paces(float(v))
             table_rows.append({
                 "VDOT": v,
-                "Easy": pace_display(p.E),
-                "Marathon": pace_display(p.M),
-                "Threshold": pace_display(p.T),
-                "Interval": pace_display(p.I),
-                "Repetition": pace_display(p.R),
+                "Easy": pace_display(p.easy),
+                "Marathon": pace_display(p.marathon),
+                "Threshold": pace_display(p.threshold),
+                "Interval": pace_display(p.interval),
+                "Repetition": pace_display(p.repetition),
             })
         st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True, height=600)
 
