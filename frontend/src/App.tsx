@@ -8,6 +8,9 @@ import { LoginPage } from "@/pages/Login";
 import { CoachDashboard } from "@/pages/coach/Dashboard";
 import { CoachClients } from "@/pages/coach/Clients";
 import { CoachCommandCenter } from "@/pages/coach/CommandCenter";
+import { AthleteDashboard } from "@/pages/athlete/Dashboard";
+import { AthleteCheckIn } from "@/pages/athlete/CheckIn";
+import { AthleteLog } from "@/pages/athlete/Log";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -40,6 +43,19 @@ function AppRoutes() {
         <Route path="/coach" element={<CoachDashboard />} />
         <Route path="/coach/clients" element={<CoachClients />} />
         <Route path="/coach/command-center" element={<CoachCommandCenter />} />
+      </Route>
+
+      {/* Athlete routes */}
+      <Route
+        element={
+          <RequireAuth role="client">
+            <AppLayout />
+          </RequireAuth>
+        }
+      >
+        <Route path="/athlete" element={<AthleteDashboard />} />
+        <Route path="/athlete/checkin" element={<AthleteCheckIn />} />
+        <Route path="/athlete/log" element={<AthleteLog />} />
       </Route>
 
       {/* Root redirect */}

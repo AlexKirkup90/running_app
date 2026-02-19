@@ -108,6 +108,20 @@ export function fetchCheckins(
   return request(`/checkins?${params}`);
 }
 
+export function createCheckin(data: {
+  athlete_id: number;
+  sleep: number;
+  energy: number;
+  recovery: number;
+  stress: number;
+  training_today: boolean;
+}): Promise<CheckIn> {
+  return request("/checkins", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
 // Training Logs
 export function fetchTrainingLogs(
   athleteId?: number,
@@ -116,6 +130,24 @@ export function fetchTrainingLogs(
   const params = new URLSearchParams({ limit: String(limit) });
   if (athleteId) params.set("athlete_id", String(athleteId));
   return request(`/training-logs?${params}`);
+}
+
+export function createTrainingLog(data: {
+  athlete_id: number;
+  session_category: string;
+  duration_min: number;
+  distance_km: number;
+  avg_hr?: number | null;
+  max_hr?: number | null;
+  avg_pace_sec_per_km?: number | null;
+  rpe: number;
+  notes: string;
+  pain_flag: boolean;
+}): Promise<TrainingLog> {
+  return request("/training-logs", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
 }
 
 // Events

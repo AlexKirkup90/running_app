@@ -4,6 +4,8 @@ import {
   Users,
   AlertTriangle,
   LogOut,
+  ClipboardCheck,
+  Dumbbell,
 } from "lucide-react";
 import { useAuthStore } from "@/stores/auth";
 import { cn } from "@/lib/utils";
@@ -14,9 +16,15 @@ const coachLinks = [
   { to: "/coach/command-center", icon: AlertTriangle, label: "Command Center" },
 ];
 
+const athleteLinks = [
+  { to: "/athlete", icon: LayoutDashboard, label: "Dashboard" },
+  { to: "/athlete/checkin", icon: ClipboardCheck, label: "Check-In" },
+  { to: "/athlete/log", icon: Dumbbell, label: "Log Session" },
+];
+
 export function Sidebar() {
   const { role, username, logout } = useAuthStore();
-  const links = role === "coach" ? coachLinks : [];
+  const links = role === "coach" ? coachLinks : athleteLinks;
 
   return (
     <aside className="flex h-screen w-64 flex-col border-r bg-card">
@@ -31,7 +39,7 @@ export function Sidebar() {
           <NavLink
             key={to}
             to={to}
-            end={to === "/coach"}
+            end={to === "/coach" || to === "/athlete"}
             className={({ isActive }) =>
               cn(
                 "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
