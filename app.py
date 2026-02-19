@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import streamlit as st
 
 from core.bootstrap import ensure_demo_seeded
@@ -31,6 +33,7 @@ from pages.athlete import (
 )
 
 setup_logging()
+logger = logging.getLogger(__name__)
 
 st.set_page_config(page_title="Run Season Command", layout="wide")
 
@@ -38,8 +41,13 @@ st.set_page_config(page_title="Run Season Command", layout="wide")
 def main():
     try:
         ensure_demo_seeded()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.error("Demo seeding failed — login will not work until the database is reachable: %s", e)
+        st.warning(
+            f"Database connection failed: {e}\n\n"
+            "Copy `.streamlit/secrets.toml.example` → `.streamlit/secrets.toml` "
+            "and set DATABASE_URL for your environment."
+        )
 
     status = system_status(samples=3, slow_queries=0)
     st.caption(f"System Status: {status.status} - {status.message}")

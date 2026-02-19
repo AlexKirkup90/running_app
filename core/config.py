@@ -63,15 +63,25 @@ _ENV_PROFILES: dict[str, dict] = {
 
 
 def get_database_url() -> str:
-    """Resolve database URL from env var, Streamlit secrets, or local default."""
+    """Resolve database URL from env var, Streamlit secrets, or local default.
+
+    Resolution order:
+    1. DATABASE_URL environment variable
+    2. Streamlit secrets (`.streamlit/secrets.toml`)
+    3. Local default for common dev setups
+    """
     env_url = os.getenv("DATABASE_URL")
     if env_url:
         return env_url
     try:
         import streamlit as st
+
         return st.secrets["DATABASE_URL"]
     except Exception:
-        return "postgresql+psycopg2://postgres:postgres@localhost:5432/run_season_command"
+        pass
+    # Sensible local-dev default.  Copy .streamlit/secrets.toml.example →
+    # .streamlit/secrets.toml and adjust if your setup differs.
+    return "postgresql+psycopg2://localhost:5432/runseason"
 
 
 def get_settings() -> Settings:
