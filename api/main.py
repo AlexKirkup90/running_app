@@ -9,8 +9,9 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from api.routes import router
@@ -37,7 +38,7 @@ def create_app() -> FastAPI:
     # CORS for Vite dev server
     application.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173"],
+        allow_origins=["*"],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -45,9 +46,17 @@ def create_app() -> FastAPI:
 
     application.include_router(router)
 
-    # Serve React build in production
+    # Serve React build — static assets + SPA catch-all for client-side routing
     if FRONTEND_DIST.is_dir():
-        application.mount("/", StaticFiles(directory=str(FRONTEND_DIST), html=True), name="frontend")
+        application.mount("/assets", StaticFiles(directory=str(FRONTEND_DIST / "assets")), name="assets")
+
+        @application.get("/{full_path:path}")
+        async def serve_spa(request: Request, full_path: str):
+            """Serve index.html for all non-API routes (SPA catch-all)."""
+            file_path = FRONTEND_DIST / full_path
+            if file_path.is_file():
+                return FileResponse(file_path)
+            return FileResponse(FRONTEND_DIST / "index.html")
 
     return application
 
