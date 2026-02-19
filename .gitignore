@@ -5,3 +5,5 @@ __pycache__/
 .coverage
 .ruff_cache/
 .streamlit/secrets.toml
+frontend/node_modules/
+frontend/dist/

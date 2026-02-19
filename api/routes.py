@@ -7,7 +7,7 @@ unless otherwise noted. Coach-only endpoints require role=coach.
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -24,7 +24,10 @@ from api.auth import (
 )
 from api.schemas import (
     AthleteOut,
+    ChangePasswordInput,
     CheckInOut,
+    CoachClientRow,
+    CoachDashboardOut,
     EventOut,
     InterventionOut,
     MessageOut,
@@ -49,7 +52,7 @@ from core.models import (
     TrainingLog,
     User,
 )
-from core.security import hash_password
+from core.security import hash_password, validate_password_policy, verify_password
 from core.services.command_center import collect_athlete_signals, compose_recommendation, sync_interventions_queue
 from core.services.readiness import readiness_band, readiness_score
 from core.validators import (
@@ -82,6 +85,108 @@ def login(form_data: Annotated[OAuth2PasswordRequestForm, Depends()]):
 def me(current_user: Annotated[TokenData, Depends(get_current_user)]):
     """Return the current authenticated user's token data."""
     return current_user
+
+
+@router.post("/auth/change-password", response_model=MessageOut, tags=["auth"])
+def change_password(body: ChangePasswordInput, current_user: Annotated[TokenData, Depends(get_current_user)]):
+    """Change the current user's password."""
+    valid, msg = validate_password_policy(body.new_password)
+    if not valid:
+        raise HTTPException(status_code=400, detail=msg)
+    with session_scope() as s:
+        user = s.get(User, current_user.user_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        if not verify_password(body.current_password, user.password_hash):
+            raise HTTPException(status_code=400, detail="Current password is incorrect")
+        user.password_hash = hash_password(body.new_password)
+        user.must_change_password = False
+    return MessageOut(message="Password changed successfully")
+
+
+# ── Coach Dashboard ──────────────────────────────────────────────────────
+
+@router.get("/coach/dashboard", response_model=CoachDashboardOut, tags=["coach"])
+def coach_dashboard(coach: Annotated[TokenData, Depends(require_coach)]):
+    """Aggregated coach dashboard: athlete counts, interventions, weekly load."""
+    from sqlalchemy import func
+    with session_scope() as s:
+        total = s.execute(select(func.count(Athlete.id))).scalar() or 0
+        active = s.execute(select(func.count(Athlete.id)).where(Athlete.status == "active")).scalar() or 0
+        open_intv = s.execute(
+            select(func.count(CoachIntervention.id)).where(CoachIntervention.status == "open")
+        ).scalar() or 0
+        high_risk = s.execute(
+            select(func.count(CoachIntervention.id)).where(
+                CoachIntervention.status == "open", CoachIntervention.risk_score >= 0.7
+            )
+        ).scalar() or 0
+
+        # Weekly load for last 8 weeks
+        from core.services.analytics import weekly_summary
+        import pandas as pd
+        cutoff = date.today() - timedelta(weeks=8)
+        logs = s.execute(
+            select(TrainingLog).where(TrainingLog.date >= cutoff)
+        ).scalars().all()
+        if logs:
+            logs_df = pd.DataFrame([{
+                "id": row.id, "date": row.date, "duration_min": row.duration_min, "load_score": row.load_score,
+            } for row in logs])
+            ws = weekly_summary(logs_df)
+            weekly_load = ws.to_dict("records")
+        else:
+            weekly_load = []
+
+        return CoachDashboardOut(
+            total_athletes=total,
+            active_athletes=active,
+            open_interventions=open_intv,
+            high_risk_count=high_risk,
+            weekly_load=weekly_load,
+        )
+
+
+@router.get("/coach/clients", response_model=list[CoachClientRow], tags=["coach"])
+def coach_clients(coach: Annotated[TokenData, Depends(require_coach)]):
+    """List all athletes with intervention counts and latest activity dates."""
+    from sqlalchemy import func
+    with session_scope() as s:
+        athletes = s.execute(
+            select(Athlete).where(Athlete.status == "active").order_by(Athlete.first_name, Athlete.last_name)
+        ).scalars().all()
+        results = []
+        for ath in athletes:
+            open_count = s.execute(
+                select(func.count(CoachIntervention.id)).where(
+                    CoachIntervention.athlete_id == ath.id, CoachIntervention.status == "open"
+                )
+            ).scalar() or 0
+            max_risk = s.execute(
+                select(func.max(CoachIntervention.risk_score)).where(
+                    CoachIntervention.athlete_id == ath.id, CoachIntervention.status == "open"
+                )
+            ).scalar()
+            from core.services.command_center import risk_priority
+            risk_label = risk_priority(max_risk) if max_risk is not None else "stable"
+            last_ci = s.execute(
+                select(func.max(CheckIn.day)).where(CheckIn.athlete_id == ath.id)
+            ).scalar()
+            last_log = s.execute(
+                select(func.max(TrainingLog.date)).where(TrainingLog.athlete_id == ath.id)
+            ).scalar()
+            results.append(CoachClientRow(
+                athlete_id=ath.id,
+                first_name=ath.first_name,
+                last_name=ath.last_name,
+                email=ath.email,
+                status=ath.status,
+                open_interventions=open_count,
+                risk_label=risk_label,
+                last_checkin=last_ci,
+                last_log=last_log,
+            ))
+        return results
 
 
 # ── Athletes ──────────────────────────────────────────────────────────────

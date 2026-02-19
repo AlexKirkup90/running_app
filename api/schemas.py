@@ -172,3 +172,34 @@ class PaginatedResponse(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+# --- Auth ---
+
+class ChangePasswordInput(BaseModel):
+    current_password: str = Field(min_length=1)
+    new_password: str = Field(min_length=10, max_length=128)
+
+
+# --- Coach Dashboard ---
+
+class CoachDashboardOut(BaseModel):
+    total_athletes: int
+    active_athletes: int
+    open_interventions: int
+    high_risk_count: int
+    weekly_load: list[dict]
+
+
+class CoachClientRow(BaseModel):
+    athlete_id: int
+    first_name: str
+    last_name: str
+    email: str
+    status: str
+    open_interventions: int
+    risk_label: str
+    last_checkin: Optional[date] = None
+    last_log: Optional[date] = None
+
+    model_config = {"from_attributes": True}
