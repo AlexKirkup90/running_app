@@ -157,6 +157,17 @@ export function fetchEvents(athleteId?: number): Promise<Event[]> {
   return request(`/events?${params}`);
 }
 
+export function createEvent(data: {
+  name: string;
+  event_date: string;
+  distance: string;
+}): Promise<Event> {
+  return request("/events", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
 // Plans
 export function fetchPlans(
   athleteId?: number,

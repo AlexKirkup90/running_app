@@ -11,6 +11,9 @@ import { CoachCommandCenter } from "@/pages/coach/CommandCenter";
 import { AthleteDashboard } from "@/pages/athlete/Dashboard";
 import { AthleteCheckIn } from "@/pages/athlete/CheckIn";
 import { AthleteLog } from "@/pages/athlete/Log";
+import { AthletePlans } from "@/pages/athlete/Plans";
+import { AthleteEvents } from "@/pages/athlete/Events";
+import { AthleteAnalytics } from "@/pages/athlete/Analytics";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -56,6 +59,9 @@ function AppRoutes() {
         <Route path="/athlete" element={<AthleteDashboard />} />
         <Route path="/athlete/checkin" element={<AthleteCheckIn />} />
         <Route path="/athlete/log" element={<AthleteLog />} />
+        <Route path="/athlete/plans" element={<AthletePlans />} />
+        <Route path="/athlete/events" element={<AthleteEvents />} />
+        <Route path="/athlete/analytics" element={<AthleteAnalytics />} />
       </Route>
 
       {/* Root redirect */}

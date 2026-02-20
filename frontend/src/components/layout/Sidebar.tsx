@@ -6,6 +6,9 @@ import {
   LogOut,
   ClipboardCheck,
   Dumbbell,
+  CalendarDays,
+  Target,
+  TrendingUp,
 } from "lucide-react";
 import { useAuthStore } from "@/stores/auth";
 import { cn } from "@/lib/utils";
@@ -20,6 +23,9 @@ const athleteLinks = [
   { to: "/athlete", icon: LayoutDashboard, label: "Dashboard" },
   { to: "/athlete/checkin", icon: ClipboardCheck, label: "Check-In" },
   { to: "/athlete/log", icon: Dumbbell, label: "Log Session" },
+  { to: "/athlete/plans", icon: Target, label: "Plans" },
+  { to: "/athlete/events", icon: CalendarDays, label: "Events" },
+  { to: "/athlete/analytics", icon: TrendingUp, label: "Analytics" },
 ];
 
 export function Sidebar() {
