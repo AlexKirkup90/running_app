@@ -6,6 +6,9 @@ import type {
   Event,
   Intervention,
   MessageResponse,
+  OrgAssignment,
+  OrgCoach,
+  Organization,
   Plan,
   PlanDaySession,
   PlanWeek,
@@ -222,6 +225,50 @@ export function fetchRecommendation(
   athleteId: number,
 ): Promise<Recommendation> {
   return request(`/athletes/${athleteId}/recommendation`);
+}
+
+// Organizations (Phase 6)
+export function fetchOrganizations(): Promise<Organization[]> {
+  return request("/organizations");
+}
+
+export function fetchOrgCoaches(orgId: number): Promise<OrgCoach[]> {
+  return request(`/organizations/${orgId}/coaches`);
+}
+
+export function fetchOrgAssignments(orgId: number): Promise<OrgAssignment[]> {
+  return request(`/organizations/${orgId}/assignments`);
+}
+
+export function createAssignment(
+  orgId: number,
+  coachUserId: number,
+  athleteId: number,
+): Promise<MessageResponse> {
+  return request(`/organizations/${orgId}/assignments`, {
+    method: "POST",
+    body: JSON.stringify({ coach_user_id: coachUserId, athlete_id: athleteId }),
+  });
+}
+
+export function transferAssignment(
+  orgId: number,
+  assignmentId: number,
+  newCoachUserId: number,
+): Promise<MessageResponse> {
+  return request(`/organizations/${orgId}/assignments/${assignmentId}/transfer`, {
+    method: "PUT",
+    body: JSON.stringify({ new_coach_user_id: newCoachUserId }),
+  });
+}
+
+export function removeAssignment(
+  orgId: number,
+  assignmentId: number,
+): Promise<MessageResponse> {
+  return request(`/organizations/${orgId}/assignments/${assignmentId}`, {
+    method: "DELETE",
+  });
 }
 
 export { ApiError };

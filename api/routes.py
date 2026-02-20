@@ -23,11 +23,13 @@ from api.auth import (
     require_coach,
 )
 from api.schemas import (
+    AssignAthleteInput,
     AthleteOut,
     ChangePasswordInput,
     CheckInOut,
     CoachClientRow,
     CoachDashboardOut,
+    CreateOrgInput,
     EventOut,
     InterventionOut,
     MessageOut,
@@ -36,6 +38,7 @@ from api.schemas import (
     PlanWeekOut,
     RecommendationOut,
     TrainingLogOut,
+    TransferAthleteInput,
     WebhookOut,
     WebhookRegister,
 )
@@ -504,29 +507,59 @@ def delete_webhook(hook_id: str, coach: Annotated[TokenData, Depends(require_coa
     return MessageOut(message="Webhook deleted")
 
 
-# ── Organizations ─────────────────────────────────────────────────────────
+# ── Organizations (Phase 6) ───────────────────────────────────────────────
 
 @router.get("/organizations", tags=["organizations"])
 def list_organizations(coach: Annotated[TokenData, Depends(require_coach)]):
-    """List organizations the coach belongs to."""
-    from core.models import OrgMembership, Organization
+    """List organizations the coach belongs to, with member counts."""
+    from sqlalchemy import func
+    from core.models import CoachAssignment, OrgMembership, Organization
     with session_scope() as s:
         rows = s.execute(
             select(Organization, OrgMembership.org_role)
             .join(OrgMembership, OrgMembership.org_id == Organization.id)
             .where(OrgMembership.user_id == coach.user_id)
         ).all()
-        return [
-            {"id": org.id, "name": org.name, "tier": org.tier, "role": role,
-             "max_coaches": org.max_coaches, "max_athletes": org.max_athletes}
-            for org, role in rows
-        ]
+        result = []
+        for org, role in rows:
+            coach_count = s.execute(
+                select(func.count()).select_from(OrgMembership).where(OrgMembership.org_id == org.id)
+            ).scalar() or 0
+            athlete_count = s.execute(
+                select(func.count()).select_from(CoachAssignment)
+                .where(CoachAssignment.org_id == org.id, CoachAssignment.status == "active")
+            ).scalar() or 0
+            result.append({
+                "id": org.id, "name": org.name, "slug": org.slug,
+                "tier": org.tier, "role": role,
+                "max_coaches": org.max_coaches, "max_athletes": org.max_athletes,
+                "coach_count": coach_count, "athlete_count": athlete_count,
+            })
+        return result
+
+
+@router.post("/organizations", tags=["organizations"], status_code=201)
+def create_organization(
+    body: "CreateOrgInput",
+    coach: Annotated[TokenData, Depends(require_coach)],
+):
+    """Create a new organization. The creator becomes owner."""
+    from api.schemas import CreateOrgInput as _CI  # noqa: F811
+    from core.models import OrgMembership, Organization
+    with session_scope() as s:
+        org = Organization(name=body.name, slug=body.slug, tier=body.tier)
+        s.add(org)
+        s.flush()
+        s.add(OrgMembership(org_id=org.id, user_id=coach.user_id, org_role="owner", caseload_cap=30))
+        s.flush()
+        return {"id": org.id, "name": org.name, "slug": org.slug, "tier": org.tier}
 
 
 @router.get("/organizations/{org_id}/coaches", tags=["organizations"])
 def list_org_coaches(org_id: int, coach: Annotated[TokenData, Depends(require_coach)]):
-    """List coaches in an organization."""
-    from core.models import OrgMembership
+    """List coaches in an organization with assigned athlete counts."""
+    from sqlalchemy import func
+    from core.models import CoachAssignment, OrgMembership
     with session_scope() as s:
         rows = s.execute(
             select(OrgMembership.user_id, OrgMembership.org_role, OrgMembership.caseload_cap,
@@ -534,10 +567,19 @@ def list_org_coaches(org_id: int, coach: Annotated[TokenData, Depends(require_co
             .join(User, User.id == OrgMembership.user_id)
             .where(OrgMembership.org_id == org_id)
         ).all()
-        return [
-            {"user_id": uid, "username": uname, "role": role, "caseload_cap": cap}
-            for uid, role, cap, uname in rows
-        ]
+        result = []
+        for uid, role, cap, uname in rows:
+            assigned = s.execute(
+                select(func.count()).select_from(CoachAssignment)
+                .where(CoachAssignment.org_id == org_id,
+                       CoachAssignment.coach_user_id == uid,
+                       CoachAssignment.status == "active")
+            ).scalar() or 0
+            result.append({
+                "user_id": uid, "username": uname, "role": role,
+                "caseload_cap": cap, "assigned_athletes": assigned,
+            })
+        return result
 
 
 @router.get("/organizations/{org_id}/assignments", tags=["organizations"])
@@ -546,16 +588,93 @@ def list_org_assignments(org_id: int, coach: Annotated[TokenData, Depends(requir
     from core.models import CoachAssignment
     with session_scope() as s:
         rows = s.execute(
-            select(CoachAssignment.coach_user_id, CoachAssignment.athlete_id,
-                   CoachAssignment.status, Athlete.first_name, Athlete.last_name)
+            select(CoachAssignment.id, CoachAssignment.coach_user_id,
+                   CoachAssignment.athlete_id, CoachAssignment.status,
+                   Athlete.first_name, Athlete.last_name, User.username)
             .join(Athlete, Athlete.id == CoachAssignment.athlete_id)
-            .where(CoachAssignment.org_id == org_id, CoachAssignment.status == "active")
+            .join(User, User.id == CoachAssignment.coach_user_id)
+            .where(CoachAssignment.org_id == org_id)
         ).all()
         return [
-            {"coach_user_id": cuid, "athlete_id": aid, "status": s,
-             "athlete_name": f"{first} {last}"}
-            for cuid, aid, s, first, last in rows
+            {"id": aid, "coach_user_id": cuid, "coach_username": cuname,
+             "athlete_id": atid, "athlete_name": f"{first} {last}",
+             "status": st}
+            for aid, cuid, atid, st, first, last, cuname in rows
         ]
+
+
+@router.post("/organizations/{org_id}/assignments", tags=["organizations"], status_code=201)
+def create_assignment(
+    org_id: int,
+    body: "AssignAthleteInput",
+    coach: Annotated[TokenData, Depends(require_coach)],
+):
+    """Assign an athlete to a coach within an organization."""
+    from api.schemas import AssignAthleteInput as _AI  # noqa: F811
+    from core.models import CoachAssignment
+    with session_scope() as s:
+        existing = s.execute(
+            select(CoachAssignment).where(
+                CoachAssignment.org_id == org_id,
+                CoachAssignment.athlete_id == body.athlete_id,
+                CoachAssignment.status == "active",
+            )
+        ).scalar_one_or_none()
+        if existing:
+            raise HTTPException(status_code=409, detail="Athlete already assigned in this org")
+        assignment = CoachAssignment(
+            org_id=org_id, coach_user_id=body.coach_user_id,
+            athlete_id=body.athlete_id, status="active",
+        )
+        s.add(assignment)
+        s.flush()
+        return {"id": assignment.id, "message": "Athlete assigned"}
+
+
+@router.put("/organizations/{org_id}/assignments/{assignment_id}/transfer", tags=["organizations"])
+def transfer_assignment(
+    org_id: int,
+    assignment_id: int,
+    body: "TransferAthleteInput",
+    coach: Annotated[TokenData, Depends(require_coach)],
+):
+    """Transfer an athlete to a different coach."""
+    from api.schemas import TransferAthleteInput as _TI  # noqa: F811
+    from core.models import CoachAssignment
+    with session_scope() as s:
+        assignment = s.execute(
+            select(CoachAssignment).where(
+                CoachAssignment.id == assignment_id,
+                CoachAssignment.org_id == org_id,
+            )
+        ).scalar_one_or_none()
+        if not assignment:
+            raise HTTPException(status_code=404, detail="Assignment not found")
+        assignment.coach_user_id = body.new_coach_user_id
+        s.flush()
+        return {"message": "Athlete transferred"}
+
+
+@router.delete("/organizations/{org_id}/assignments/{assignment_id}", tags=["organizations"])
+def remove_assignment(
+    org_id: int,
+    assignment_id: int,
+    coach: Annotated[TokenData, Depends(require_coach)],
+):
+    """Remove an athlete-coach assignment (set to paused)."""
+    from core.models import CoachAssignment
+    with session_scope() as s:
+        assignment = s.execute(
+            select(CoachAssignment).where(
+                CoachAssignment.id == assignment_id,
+                CoachAssignment.org_id == org_id,
+            )
+        ).scalar_one_or_none()
+        if not assignment:
+            raise HTTPException(status_code=404, detail="Assignment not found")
+        assignment.status = "paused"
+        s.flush()
+        return {"message": "Assignment removed"}
 
 
 # ── Community ─────────────────────────────────────────────────────────────

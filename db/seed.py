@@ -14,7 +14,7 @@ from alembic.config import Config
 from sqlalchemy import select
 
 from core.db import session_scope
-from core.models import Athlete, AthletePreference, CheckIn, Event, Plan, PlanDaySession, PlanWeek, SessionLibrary, TrainingLog, User
+from core.models import Athlete, AthletePreference, CheckIn, CoachAssignment, Event, OrgMembership, Organization, Plan, PlanDaySession, PlanWeek, SessionLibrary, TrainingLog, User
 from core.security import hash_password
 from core.services.planning import assign_week_sessions, generate_plan_weeks
 from core.services.session_catalog import (
@@ -196,6 +196,48 @@ def seed_users_athletes() -> None:
                     s.add(CheckIn(athlete_id=athlete.id, day=log_date, sleep=3 + d % 2, energy=3, recovery=3, stress=2 + d % 2, training_today=True))
 
 
+def seed_organization() -> None:
+    """Seed a demo organization with coach membership and athlete assignments."""
+    with session_scope() as s:
+        existing = s.execute(select(Organization).where(Organization.slug == "run-season-elite")).scalar_one_or_none()
+        if existing:
+            return
+
+        org = Organization(
+            name="Run Season Elite",
+            slug="run-season-elite",
+            tier="pro",
+            max_coaches=5,
+            max_athletes=50,
+        )
+        s.add(org)
+        s.flush()
+
+        # Add the coach as owner
+        coach = s.execute(select(User).where(User.username == "coach")).scalar_one_or_none()
+        if coach:
+            s.add(OrgMembership(org_id=org.id, user_id=coach.id, org_role="owner", caseload_cap=30))
+
+            # Add a second coach (assistant) for demo
+            assistant = s.execute(select(User).where(User.username == "coach2")).scalar_one_or_none()
+            if not assistant:
+                assistant = User(username="coach2", role="coach", password_hash=hash_password("CoachPass!234"), must_change_password=False)
+                s.add(assistant)
+                s.flush()
+            s.add(OrgMembership(org_id=org.id, user_id=assistant.id, org_role="coach", caseload_cap=15))
+
+            # Assign athletes to coaches
+            athletes = s.execute(select(Athlete)).scalars().all()
+            for i, athlete in enumerate(athletes):
+                assigned_coach = coach if i < 2 else assistant
+                s.add(CoachAssignment(
+                    org_id=org.id,
+                    coach_user_id=assigned_coach.id,
+                    athlete_id=athlete.id,
+                    status="active",
+                ))
+
+
 def backfill_plan_day_sessions() -> None:
     with session_scope() as s:
         weeks = s.execute(
@@ -234,6 +276,7 @@ def main() -> None:
     seed_sessions()
     seed_users_athletes()
     backfill_plan_day_sessions()
+    seed_organization()
     print("Seeding complete")
 
 

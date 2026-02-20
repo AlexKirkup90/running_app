@@ -153,3 +153,34 @@ export interface CoachClientRow {
 export interface MessageResponse {
   message: string;
 }
+
+// --- Organizations (Phase 6) ---
+
+export interface Organization {
+  id: number;
+  name: string;
+  slug: string;
+  tier: string;
+  role: string;
+  max_coaches: number;
+  max_athletes: number;
+  coach_count: number;
+  athlete_count: number;
+}
+
+export interface OrgCoach {
+  user_id: number;
+  username: string;
+  role: string;
+  caseload_cap: number;
+  assigned_athletes: number;
+}
+
+export interface OrgAssignment {
+  id: number;
+  coach_user_id: number;
+  coach_username: string;
+  athlete_id: number;
+  athlete_name: string;
+  status: string;
+}

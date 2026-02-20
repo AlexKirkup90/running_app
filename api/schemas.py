@@ -203,3 +203,44 @@ class CoachClientRow(BaseModel):
     last_log: Optional[date] = None
 
     model_config = {"from_attributes": True}
+
+
+# --- Organizations (Phase 6) ---
+
+class OrgOut(BaseModel):
+    id: int
+    name: str
+    slug: str
+    tier: str
+    max_coaches: int
+    max_athletes: int
+    role: str  # caller's role within org
+    coach_count: int = 0
+    athlete_count: int = 0
+
+class OrgCoachOut(BaseModel):
+    user_id: int
+    username: str
+    role: str
+    caseload_cap: int
+    assigned_athletes: int = 0
+
+class OrgAssignmentOut(BaseModel):
+    id: int
+    coach_user_id: int
+    coach_username: str
+    athlete_id: int
+    athlete_name: str
+    status: str
+
+class CreateOrgInput(BaseModel):
+    name: str = Field(min_length=2, max_length=200)
+    slug: str = Field(min_length=2, max_length=100)
+    tier: str = Field(default="free")
+
+class AssignAthleteInput(BaseModel):
+    coach_user_id: int
+    athlete_id: int
+
+class TransferAthleteInput(BaseModel):
+    new_coach_user_id: int
