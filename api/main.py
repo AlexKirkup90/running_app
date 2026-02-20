@@ -35,7 +35,6 @@ def create_app() -> FastAPI:
         redoc_url="/redoc",
     )
 
-    # CORS for Vite dev server
     application.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -46,13 +45,12 @@ def create_app() -> FastAPI:
 
     application.include_router(router)
 
-    # Serve React build — static assets + SPA catch-all for client-side routing
+    # Serve React build with SPA catch-all for client-side routing
     if FRONTEND_DIST.is_dir():
         application.mount("/assets", StaticFiles(directory=str(FRONTEND_DIST / "assets")), name="assets")
 
         @application.get("/{full_path:path}")
         async def serve_spa(request: Request, full_path: str):
-            """Serve index.html for all non-API routes (SPA catch-all)."""
             file_path = FRONTEND_DIST / full_path
             if file_path.is_file():
                 return FileResponse(file_path)
