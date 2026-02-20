@@ -9,9 +9,11 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from api.routes import router
@@ -49,12 +51,14 @@ def create_app() -> FastAPI:
     if FRONTEND_DIST.is_dir():
         application.mount("/assets", StaticFiles(directory=str(FRONTEND_DIST / "assets")), name="assets")
 
-        @application.get("/{full_path:path}")
-        async def serve_spa(request: Request, full_path: str):
-            file_path = FRONTEND_DIST / full_path
-            if file_path.is_file():
-                return FileResponse(file_path)
-            return FileResponse(FRONTEND_DIST / "index.html")
+        @application.exception_handler(StarletteHTTPException)
+        async def spa_fallback(request: Request, exc: StarletteHTTPException):
+            if exc.status_code == 404 and not request.url.path.startswith("/api/"):
+                return FileResponse(FRONTEND_DIST / "index.html")
+            return JSONResponse(
+                status_code=exc.status_code,
+                content={"detail": exc.detail},
+            )
 
     return application
 
