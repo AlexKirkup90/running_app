@@ -184,3 +184,85 @@ export interface OrgAssignment {
   athlete_name: string;
   status: string;
 }
+
+// --- Community & Social (Phase 7) ---
+
+export interface TrainingGroup {
+  id: number;
+  name: string;
+  description: string;
+  owner_user_id: number;
+  privacy: string;
+  max_members: number;
+  member_count: number;
+  created_at: string | null;
+}
+
+export interface GroupMember {
+  id: number;
+  group_id: number;
+  athlete_id: number;
+  athlete_name: string;
+  role: string;
+  joined_at: string | null;
+}
+
+export interface Challenge {
+  id: number;
+  group_id: number | null;
+  name: string;
+  challenge_type: string;
+  target_value: number;
+  start_date: string;
+  end_date: string;
+  status: string;
+  created_by: number;
+  participant_count: number;
+  created_at: string | null;
+}
+
+export interface ChallengeEntry {
+  id: number;
+  challenge_id: number;
+  athlete_id: number;
+  athlete_name: string;
+  progress: number;
+  completed: boolean;
+  last_updated: string | null;
+}
+
+export interface GroupMessage {
+  id: number;
+  group_id: number;
+  author_athlete_id: number;
+  author_name: string;
+  content: string;
+  message_type: string;
+  created_at: string | null;
+}
+
+export interface Kudos {
+  id: number;
+  from_athlete_id: number;
+  from_name: string;
+  to_athlete_id: number;
+  to_name: string;
+  training_log_id: number | null;
+  created_at: string | null;
+}
+
+export interface LeaderboardEntry {
+  athlete_id: number;
+  name: string;
+  value: number;
+  rank: number;
+}
+
+export interface ActivityFeedItem {
+  athlete_id: number;
+  athlete_name: string;
+  activity_summary: string;
+  date: string;
+  training_log_id: number;
+  kudos_count: number;
+}

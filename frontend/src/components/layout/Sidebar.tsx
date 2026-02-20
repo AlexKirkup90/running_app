@@ -12,6 +12,7 @@ import {
   Building2,
   Shield,
   ArrowRightLeft,
+  HeartHandshake,
 } from "lucide-react";
 import { useAuthStore } from "@/stores/auth";
 import { cn } from "@/lib/utils";
@@ -32,6 +33,7 @@ const athleteLinks = [
   { to: "/athlete/plans", icon: Target, label: "Plans" },
   { to: "/athlete/events", icon: CalendarDays, label: "Events" },
   { to: "/athlete/analytics", icon: TrendingUp, label: "Analytics" },
+  { to: "/athlete/community", icon: HeartHandshake, label: "Community" },
 ];
 
 export function Sidebar() {

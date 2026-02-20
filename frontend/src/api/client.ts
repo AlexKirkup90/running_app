@@ -1,10 +1,17 @@
 import type {
+  ActivityFeedItem,
   Athlete,
+  Challenge,
+  ChallengeEntry,
   CheckIn,
   CoachClientRow,
   CoachDashboard,
   Event,
+  GroupMember,
+  GroupMessage,
   Intervention,
+  Kudos,
+  LeaderboardEntry,
   MessageResponse,
   OrgAssignment,
   OrgCoach,
@@ -14,6 +21,7 @@ import type {
   PlanWeek,
   Recommendation,
   TokenResponse,
+  TrainingGroup,
   TrainingLog,
 } from "./types";
 
@@ -269,6 +277,126 @@ export function removeAssignment(
   return request(`/organizations/${orgId}/assignments/${assignmentId}`, {
     method: "DELETE",
   });
+}
+
+// Community & Social (Phase 7)
+export function fetchGroups(): Promise<TrainingGroup[]> {
+  return request("/groups");
+}
+
+export function createGroup(data: {
+  name: string;
+  description?: string;
+  privacy?: string;
+  max_members?: number;
+}): Promise<TrainingGroup> {
+  return request("/groups", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export function fetchGroupMembers(groupId: number): Promise<GroupMember[]> {
+  return request(`/groups/${groupId}/members`);
+}
+
+export function addGroupMember(
+  groupId: number,
+  athleteId: number,
+): Promise<MessageResponse> {
+  return request(`/groups/${groupId}/members?athlete_id=${athleteId}`, {
+    method: "POST",
+  });
+}
+
+export function removeGroupMember(
+  groupId: number,
+  athleteId: number,
+): Promise<MessageResponse> {
+  return request(`/groups/${groupId}/members/${athleteId}`, {
+    method: "DELETE",
+  });
+}
+
+export function fetchGroupMessages(
+  groupId: number,
+  limit = 30,
+): Promise<GroupMessage[]> {
+  return request(`/groups/${groupId}/messages?limit=${limit}`);
+}
+
+export function postGroupMessage(
+  groupId: number,
+  content: string,
+  messageType = "text",
+): Promise<GroupMessage> {
+  return request(`/groups/${groupId}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ content, message_type: messageType }),
+  });
+}
+
+export function fetchGroupLeaderboard(
+  groupId: number,
+  metric = "distance",
+  days = 7,
+): Promise<LeaderboardEntry[]> {
+  return request(`/groups/${groupId}/leaderboard?metric=${metric}&days=${days}`);
+}
+
+export function fetchChallenges(status = "active"): Promise<Challenge[]> {
+  return request(`/challenges?status=${status}`);
+}
+
+export function createChallenge(data: {
+  name: string;
+  challenge_type: string;
+  target_value: number;
+  start_date: string;
+  end_date: string;
+  group_id?: number | null;
+}): Promise<Challenge> {
+  return request("/challenges", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export function fetchChallengeEntries(
+  challengeId: number,
+): Promise<ChallengeEntry[]> {
+  return request(`/challenges/${challengeId}/entries`);
+}
+
+export function joinChallenge(challengeId: number): Promise<MessageResponse> {
+  return request(`/challenges/${challengeId}/join`, { method: "POST" });
+}
+
+export function fetchActivityFeed(
+  groupId?: number,
+  limit = 20,
+): Promise<ActivityFeedItem[]> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (groupId) params.set("group_id", String(groupId));
+  return request(`/activity-feed?${params}`);
+}
+
+export function fetchKudos(
+  athleteId?: number,
+  limit = 20,
+): Promise<Kudos[]> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (athleteId) params.set("athlete_id", String(athleteId));
+  return request(`/kudos?${params}`);
+}
+
+export function giveKudos(
+  toAthleteId: number,
+  trainingLogId?: number | null,
+): Promise<MessageResponse> {
+  const params = new URLSearchParams({ to_athlete_id: String(toAthleteId) });
+  if (trainingLogId) params.set("training_log_id", String(trainingLogId));
+  return request(`/kudos?${params}`, { method: "POST" });
 }
 
 export { ApiError };

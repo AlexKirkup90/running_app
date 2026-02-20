@@ -25,18 +25,28 @@ from api.auth import (
 from api.schemas import (
     AssignAthleteInput,
     AthleteOut,
+    ChallengeCreateInput,
+    ChallengeEntryOut,
+    ChallengeOut,
     ChangePasswordInput,
     CheckInOut,
     CoachClientRow,
     CoachDashboardOut,
     CreateOrgInput,
     EventOut,
+    GroupMemberOut,
+    GroupMessageCreateInput,
+    GroupMessageOut,
     InterventionOut,
+    KudosOut,
+    LeaderboardEntryOut,
     MessageOut,
     PlanDaySessionOut,
     PlanOut,
     PlanWeekOut,
     RecommendationOut,
+    TrainingGroupCreateInput,
+    TrainingGroupOut,
     TrainingLogOut,
     TransferAthleteInput,
     WebhookOut,
@@ -776,6 +786,394 @@ def list_sync_logs(
             }
             for r in rows
         ]
+
+
+# ── Community & Social (Phase 7) ─────────────────────────────────────────
+
+@router.get("/groups", response_model=list[TrainingGroupOut], tags=["community"])
+def list_groups(current_user: Annotated[TokenData, Depends(get_current_user)]):
+    """List training groups. Athletes see their groups; coaches see all."""
+    from sqlalchemy import func
+    from core.models import GroupMembership, TrainingGroup
+    with session_scope() as s:
+        if current_user.role == "client":
+            groups = s.execute(
+                select(TrainingGroup)
+                .join(GroupMembership, GroupMembership.group_id == TrainingGroup.id)
+                .where(GroupMembership.athlete_id == current_user.athlete_id)
+            ).scalars().all()
+        else:
+            groups = s.execute(select(TrainingGroup).order_by(TrainingGroup.name)).scalars().all()
+        result = []
+        for g in groups:
+            count = s.execute(
+                select(func.count()).select_from(GroupMembership).where(GroupMembership.group_id == g.id)
+            ).scalar() or 0
+            result.append(TrainingGroupOut(
+                id=g.id, name=g.name, description=g.description,
+                owner_user_id=g.owner_user_id, privacy=g.privacy,
+                max_members=g.max_members, member_count=count,
+                created_at=g.created_at,
+            ))
+        return result
+
+
+@router.post("/groups", response_model=TrainingGroupOut, status_code=201, tags=["community"])
+def create_group(body: TrainingGroupCreateInput, coach: Annotated[TokenData, Depends(require_coach)]):
+    """Create a training group. Coach-only."""
+    from core.models import TrainingGroup
+    with session_scope() as s:
+        group = TrainingGroup(
+            name=body.name, description=body.description,
+            owner_user_id=coach.user_id, privacy=body.privacy,
+            max_members=body.max_members,
+        )
+        s.add(group)
+        s.flush()
+        return TrainingGroupOut(
+            id=group.id, name=group.name, description=group.description,
+            owner_user_id=group.owner_user_id, privacy=group.privacy,
+            max_members=group.max_members, member_count=0,
+            created_at=group.created_at,
+        )
+
+
+@router.get("/groups/{group_id}/members", response_model=list[GroupMemberOut], tags=["community"])
+def list_group_members(group_id: int, current_user: Annotated[TokenData, Depends(get_current_user)]):
+    """List members of a training group."""
+    from core.models import GroupMembership
+    with session_scope() as s:
+        rows = s.execute(
+            select(GroupMembership, Athlete.first_name, Athlete.last_name)
+            .join(Athlete, Athlete.id == GroupMembership.athlete_id)
+            .where(GroupMembership.group_id == group_id)
+            .order_by(GroupMembership.joined_at)
+        ).all()
+        return [
+            GroupMemberOut(
+                id=m.id, group_id=m.group_id, athlete_id=m.athlete_id,
+                athlete_name=f"{first} {last}", role=m.role, joined_at=m.joined_at,
+            )
+            for m, first, last in rows
+        ]
+
+
+@router.post("/groups/{group_id}/members", response_model=MessageOut, status_code=201, tags=["community"])
+def add_group_member(group_id: int, athlete_id: int = Query(...), coach: Annotated[TokenData, Depends(require_coach)] = None):
+    """Add an athlete to a group. Coach-only."""
+    from core.models import GroupMembership
+    with session_scope() as s:
+        existing = s.execute(
+            select(GroupMembership).where(
+                GroupMembership.group_id == group_id,
+                GroupMembership.athlete_id == athlete_id,
+            )
+        ).scalar_one_or_none()
+        if existing:
+            raise HTTPException(status_code=409, detail="Already a member")
+        s.add(GroupMembership(group_id=group_id, athlete_id=athlete_id, role="member"))
+    return MessageOut(message="Member added")
+
+
+@router.delete("/groups/{group_id}/members/{athlete_id}", response_model=MessageOut, tags=["community"])
+def remove_group_member(group_id: int, athlete_id: int, coach: Annotated[TokenData, Depends(require_coach)]):
+    """Remove an athlete from a group. Coach-only."""
+    from core.models import GroupMembership
+    with session_scope() as s:
+        mem = s.execute(
+            select(GroupMembership).where(
+                GroupMembership.group_id == group_id,
+                GroupMembership.athlete_id == athlete_id,
+            )
+        ).scalar_one_or_none()
+        if not mem:
+            raise HTTPException(status_code=404, detail="Membership not found")
+        s.delete(mem)
+    return MessageOut(message="Member removed")
+
+
+@router.get("/groups/{group_id}/messages", response_model=list[GroupMessageOut], tags=["community"])
+def list_group_messages(
+    group_id: int,
+    current_user: Annotated[TokenData, Depends(get_current_user)],
+    limit: int = Query(30, le=100),
+):
+    """List recent messages in a group."""
+    from core.models import GroupMessage
+    with session_scope() as s:
+        rows = s.execute(
+            select(GroupMessage, Athlete.first_name, Athlete.last_name)
+            .join(Athlete, Athlete.id == GroupMessage.author_athlete_id)
+            .where(GroupMessage.group_id == group_id)
+            .order_by(GroupMessage.created_at.desc())
+            .limit(limit)
+        ).all()
+        return [
+            GroupMessageOut(
+                id=m.id, group_id=m.group_id, author_athlete_id=m.author_athlete_id,
+                author_name=f"{first} {last}", content=m.content,
+                message_type=m.message_type, created_at=m.created_at,
+            )
+            for m, first, last in rows
+        ]
+
+
+@router.post("/groups/{group_id}/messages", response_model=GroupMessageOut, status_code=201, tags=["community"])
+def post_group_message(
+    group_id: int,
+    body: GroupMessageCreateInput,
+    current_user: Annotated[TokenData, Depends(get_current_user)],
+):
+    """Post a message to a group."""
+    from core.models import GroupMessage
+    if not current_user.athlete_id:
+        raise HTTPException(status_code=403, detail="Only athletes can post messages")
+    with session_scope() as s:
+        athlete = s.get(Athlete, current_user.athlete_id)
+        msg = GroupMessage(
+            group_id=group_id, author_athlete_id=current_user.athlete_id,
+            content=body.content, message_type=body.message_type,
+        )
+        s.add(msg)
+        s.flush()
+        return GroupMessageOut(
+            id=msg.id, group_id=msg.group_id, author_athlete_id=msg.author_athlete_id,
+            author_name=f"{athlete.first_name} {athlete.last_name}",
+            content=msg.content, message_type=msg.message_type, created_at=msg.created_at,
+        )
+
+
+@router.get("/groups/{group_id}/leaderboard", response_model=list[LeaderboardEntryOut], tags=["community"])
+def group_leaderboard(
+    group_id: int,
+    current_user: Annotated[TokenData, Depends(get_current_user)],
+    metric: str = Query("distance"),
+    days: int = Query(7, ge=1, le=90),
+):
+    """Get a leaderboard for a group over the last N days."""
+    from sqlalchemy import func
+    from core.models import GroupMembership
+    from core.services.community import compute_leaderboard
+    cutoff = date.today() - timedelta(days=days)
+    with session_scope() as s:
+        members = s.execute(
+            select(GroupMembership.athlete_id).where(GroupMembership.group_id == group_id)
+        ).scalars().all()
+        if not members:
+            return []
+        logs = s.execute(
+            select(
+                TrainingLog.athlete_id,
+                Athlete.first_name, Athlete.last_name,
+                func.sum(TrainingLog.distance_km).label("distance_km"),
+                func.sum(TrainingLog.duration_min).label("duration_min"),
+                func.sum(TrainingLog.load_score).label("load_score"),
+                func.count(TrainingLog.id).label("sessions_count"),
+            )
+            .join(Athlete, Athlete.id == TrainingLog.athlete_id)
+            .where(TrainingLog.athlete_id.in_(members), TrainingLog.date >= cutoff)
+            .group_by(TrainingLog.athlete_id, Athlete.first_name, Athlete.last_name)
+        ).all()
+        athlete_logs = [
+            {
+                "athlete_id": r.athlete_id,
+                "name": f"{r.first_name} {r.last_name}",
+                "distance_km": float(r.distance_km or 0),
+                "duration_min": float(r.duration_min or 0),
+                "load_score": float(r.load_score or 0),
+                "sessions_count": int(r.sessions_count or 0),
+            }
+            for r in logs
+        ]
+        entries = compute_leaderboard(athlete_logs, metric)
+        return [LeaderboardEntryOut(athlete_id=e.athlete_id, name=e.name, value=e.value, rank=e.rank) for e in entries]
+
+
+@router.get("/challenges", response_model=list[ChallengeOut], tags=["community"])
+def list_challenges(
+    current_user: Annotated[TokenData, Depends(get_current_user)],
+    status_filter: str = Query("active", alias="status"),
+):
+    """List challenges. Active by default."""
+    from sqlalchemy import func
+    from core.models import Challenge, ChallengeEntry
+    with session_scope() as s:
+        q = select(Challenge)
+        if status_filter != "all":
+            q = q.where(Challenge.status == status_filter)
+        challenges = s.execute(q.order_by(Challenge.end_date)).scalars().all()
+        result = []
+        for c in challenges:
+            count = s.execute(
+                select(func.count()).select_from(ChallengeEntry).where(ChallengeEntry.challenge_id == c.id)
+            ).scalar() or 0
+            result.append(ChallengeOut(
+                id=c.id, group_id=c.group_id, name=c.name,
+                challenge_type=c.challenge_type, target_value=c.target_value,
+                start_date=c.start_date, end_date=c.end_date, status=c.status,
+                created_by=c.created_by, participant_count=count,
+                created_at=c.created_at,
+            ))
+        return result
+
+
+@router.post("/challenges", response_model=ChallengeOut, status_code=201, tags=["community"])
+def create_challenge(body: ChallengeCreateInput, coach: Annotated[TokenData, Depends(require_coach)]):
+    """Create a challenge. Coach-only."""
+    from core.models import Challenge
+    with session_scope() as s:
+        challenge = Challenge(
+            name=body.name, challenge_type=body.challenge_type,
+            target_value=body.target_value, start_date=body.start_date,
+            end_date=body.end_date, group_id=body.group_id,
+            created_by=coach.user_id,
+        )
+        s.add(challenge)
+        s.flush()
+        return ChallengeOut(
+            id=challenge.id, group_id=challenge.group_id, name=challenge.name,
+            challenge_type=challenge.challenge_type, target_value=challenge.target_value,
+            start_date=challenge.start_date, end_date=challenge.end_date,
+            status=challenge.status, created_by=challenge.created_by,
+            participant_count=0, created_at=challenge.created_at,
+        )
+
+
+@router.get("/challenges/{challenge_id}/entries", response_model=list[ChallengeEntryOut], tags=["community"])
+def list_challenge_entries(challenge_id: int, current_user: Annotated[TokenData, Depends(get_current_user)]):
+    """List all entries (participants) for a challenge with progress."""
+    from core.models import ChallengeEntry
+    with session_scope() as s:
+        rows = s.execute(
+            select(ChallengeEntry, Athlete.first_name, Athlete.last_name)
+            .join(Athlete, Athlete.id == ChallengeEntry.athlete_id)
+            .where(ChallengeEntry.challenge_id == challenge_id)
+            .order_by(ChallengeEntry.progress.desc())
+        ).all()
+        return [
+            ChallengeEntryOut(
+                id=e.id, challenge_id=e.challenge_id, athlete_id=e.athlete_id,
+                athlete_name=f"{first} {last}", progress=e.progress,
+                completed=e.completed, last_updated=e.last_updated,
+            )
+            for e, first, last in rows
+        ]
+
+
+@router.post("/challenges/{challenge_id}/join", response_model=MessageOut, status_code=201, tags=["community"])
+def join_challenge(challenge_id: int, athlete: Annotated[TokenData, Depends(require_athlete)]):
+    """Join a challenge as an athlete."""
+    from core.models import ChallengeEntry
+    with session_scope() as s:
+        existing = s.execute(
+            select(ChallengeEntry).where(
+                ChallengeEntry.challenge_id == challenge_id,
+                ChallengeEntry.athlete_id == athlete.athlete_id,
+            )
+        ).scalar_one_or_none()
+        if existing:
+            raise HTTPException(status_code=409, detail="Already joined")
+        s.add(ChallengeEntry(challenge_id=challenge_id, athlete_id=athlete.athlete_id))
+    return MessageOut(message="Joined challenge")
+
+
+@router.get("/kudos", response_model=list[KudosOut], tags=["community"])
+def list_kudos(
+    current_user: Annotated[TokenData, Depends(get_current_user)],
+    athlete_id: Optional[int] = None,
+    limit: int = Query(20, le=100),
+):
+    """List kudos received by an athlete."""
+    from sqlalchemy.orm import aliased
+    from core.models import Kudos as KudosModel
+    target_id = _resolve_athlete_id(current_user, athlete_id)
+    FromAthlete = aliased(Athlete)
+    ToAthlete = aliased(Athlete)
+    with session_scope() as s:
+        rows = s.execute(
+            select(KudosModel, FromAthlete.first_name, FromAthlete.last_name,
+                   ToAthlete.first_name, ToAthlete.last_name)
+            .join(FromAthlete, FromAthlete.id == KudosModel.from_athlete_id)
+            .join(ToAthlete, ToAthlete.id == KudosModel.to_athlete_id)
+            .where(KudosModel.to_athlete_id == target_id)
+            .order_by(KudosModel.created_at.desc())
+            .limit(limit)
+        ).all()
+        return [
+            KudosOut(
+                id=k.id, from_athlete_id=k.from_athlete_id,
+                from_name=f"{ff} {fl}", to_athlete_id=k.to_athlete_id,
+                to_name=f"{tf} {tl}", training_log_id=k.training_log_id,
+                created_at=k.created_at,
+            )
+            for k, ff, fl, tf, tl in rows
+        ]
+
+
+@router.post("/kudos", response_model=MessageOut, status_code=201, tags=["community"])
+def give_kudos(
+    to_athlete_id: int = Query(...),
+    training_log_id: Optional[int] = Query(None),
+    athlete: Annotated[TokenData, Depends(require_athlete)] = None,
+):
+    """Give kudos to another athlete."""
+    from core.models import Kudos as KudosModel
+    if athlete.athlete_id == to_athlete_id:
+        raise HTTPException(status_code=400, detail="Cannot give kudos to yourself")
+    with session_scope() as s:
+        existing = s.execute(
+            select(KudosModel).where(
+                KudosModel.from_athlete_id == athlete.athlete_id,
+                KudosModel.to_athlete_id == to_athlete_id,
+                KudosModel.training_log_id == training_log_id,
+            )
+        ).scalar_one_or_none()
+        if existing:
+            raise HTTPException(status_code=409, detail="Already gave kudos")
+        s.add(KudosModel(
+            from_athlete_id=athlete.athlete_id,
+            to_athlete_id=to_athlete_id,
+            training_log_id=training_log_id,
+        ))
+    return MessageOut(message="Kudos sent!")
+
+
+@router.get("/activity-feed", response_model=list, tags=["community"])
+def activity_feed(
+    current_user: Annotated[TokenData, Depends(get_current_user)],
+    group_id: Optional[int] = None,
+    limit: int = Query(20, le=100),
+):
+    """Get an activity feed of recent training logs from group members or all athletes."""
+    from sqlalchemy import func
+    from core.models import GroupMembership, Kudos as KudosModel
+    from core.services.community import format_activity_summary
+    with session_scope() as s:
+        q = (
+            select(TrainingLog, Athlete.first_name, Athlete.last_name)
+            .join(Athlete, Athlete.id == TrainingLog.athlete_id)
+        )
+        if group_id:
+            member_ids = s.execute(
+                select(GroupMembership.athlete_id).where(GroupMembership.group_id == group_id)
+            ).scalars().all()
+            q = q.where(TrainingLog.athlete_id.in_(member_ids))
+        q = q.order_by(TrainingLog.date.desc()).limit(limit)
+        rows = s.execute(q).all()
+        result = []
+        for log, first, last in rows:
+            kudos_count = s.execute(
+                select(func.count()).select_from(KudosModel).where(KudosModel.training_log_id == log.id)
+            ).scalar() or 0
+            result.append({
+                "athlete_id": log.athlete_id,
+                "athlete_name": f"{first} {last}",
+                "activity_summary": format_activity_summary(log.session_category, log.duration_min, log.distance_km),
+                "date": str(log.date),
+                "training_log_id": log.id,
+                "kudos_count": kudos_count,
+            })
+        return result
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────

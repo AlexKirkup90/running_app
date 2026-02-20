@@ -244,3 +244,109 @@ class AssignAthleteInput(BaseModel):
 
 class TransferAthleteInput(BaseModel):
     new_coach_user_id: int
+
+
+# --- Community & Social (Phase 7) ---
+
+class TrainingGroupOut(BaseModel):
+    id: int
+    name: str
+    description: str
+    owner_user_id: int
+    privacy: str
+    max_members: int
+    member_count: int = 0
+    created_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
+class TrainingGroupCreateInput(BaseModel):
+    name: str = Field(min_length=2, max_length=140)
+    description: str = Field(default="", max_length=1000)
+    privacy: str = Field(default="public")
+    max_members: int = Field(default=50, ge=2, le=500)
+
+
+class GroupMemberOut(BaseModel):
+    id: int
+    group_id: int
+    athlete_id: int
+    athlete_name: str = ""
+    role: str
+    joined_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
+class ChallengeOut(BaseModel):
+    id: int
+    group_id: Optional[int] = None
+    name: str
+    challenge_type: str
+    target_value: float
+    start_date: date
+    end_date: date
+    status: str
+    created_by: int
+    participant_count: int = 0
+    created_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
+class ChallengeCreateInput(BaseModel):
+    name: str = Field(min_length=2, max_length=200)
+    challenge_type: str = Field(default="distance")
+    target_value: float = Field(gt=0)
+    start_date: date
+    end_date: date
+    group_id: Optional[int] = None
+
+
+class ChallengeEntryOut(BaseModel):
+    id: int
+    challenge_id: int
+    athlete_id: int
+    athlete_name: str = ""
+    progress: float
+    completed: bool
+    last_updated: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
+class GroupMessageOut(BaseModel):
+    id: int
+    group_id: int
+    author_athlete_id: int
+    author_name: str = ""
+    content: str
+    message_type: str
+    created_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
+class GroupMessageCreateInput(BaseModel):
+    content: str = Field(min_length=1, max_length=2000)
+    message_type: str = Field(default="text")
+
+
+class KudosOut(BaseModel):
+    id: int
+    from_athlete_id: int
+    from_name: str = ""
+    to_athlete_id: int
+    to_name: str = ""
+    training_log_id: Optional[int] = None
+    created_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
+class LeaderboardEntryOut(BaseModel):
+    athlete_id: int
+    name: str
+    value: float
+    rank: int

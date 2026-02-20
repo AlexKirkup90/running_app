@@ -271,12 +271,84 @@ def backfill_plan_day_sessions() -> None:
                 nested.rollback()
 
 
+def seed_community() -> None:
+    """Seed community data: groups, memberships, challenges, entries, messages, kudos."""
+    from core.models import Challenge, ChallengeEntry, GroupMembership, GroupMessage, Kudos, TrainingGroup
+    with session_scope() as s:
+        existing = s.execute(select(TrainingGroup).where(TrainingGroup.name == "Morning Runners")).scalar_one_or_none()
+        if existing:
+            return
+
+        # Get coach user for ownership
+        coach = s.execute(select(User).where(User.username == "coach")).scalar_one_or_none()
+        if not coach:
+            return
+
+        athletes = s.execute(select(Athlete)).scalars().all()
+        if not athletes:
+            return
+
+        # Create groups
+        g1 = TrainingGroup(name="Morning Runners", description="Early birds who love sunrise runs", owner_user_id=coach.id, privacy="public", max_members=50)
+        g2 = TrainingGroup(name="Marathon Squad", description="Targeting marathon PRs together", owner_user_id=coach.id, privacy="public", max_members=30)
+        s.add_all([g1, g2])
+        s.flush()
+
+        # Add all athletes to Morning Runners, first 2 to Marathon Squad
+        for ath in athletes:
+            s.add(GroupMembership(group_id=g1.id, athlete_id=ath.id, role="member"))
+        for ath in athletes[:2]:
+            s.add(GroupMembership(group_id=g2.id, athlete_id=ath.id, role="member"))
+        s.flush()
+
+        # Create challenges
+        c1 = Challenge(
+            group_id=g1.id, name="February Distance Challenge",
+            challenge_type="distance", target_value=100.0,
+            start_date=date.today() - timedelta(days=14), end_date=date.today() + timedelta(days=14),
+            status="active", created_by=coach.id,
+        )
+        c2 = Challenge(
+            group_id=None, name="7-Day Streak Challenge",
+            challenge_type="streak", target_value=7,
+            start_date=date.today() - timedelta(days=5), end_date=date.today() + timedelta(days=9),
+            status="active", created_by=coach.id,
+        )
+        s.add_all([c1, c2])
+        s.flush()
+
+        # Add challenge entries with progress
+        for i, ath in enumerate(athletes):
+            s.add(ChallengeEntry(challenge_id=c1.id, athlete_id=ath.id, progress=30.0 + i * 15, completed=False))
+            s.add(ChallengeEntry(challenge_id=c2.id, athlete_id=ath.id, progress=3 + i, completed=(3 + i >= 7)))
+        s.flush()
+
+        # Add group messages
+        messages = [
+            ("Great session today! Tempo felt smooth.", "text"),
+            ("Hit a new 5K PR this weekend!", "achievement"),
+            ("Keep it up everyone, we're crushing February!", "text"),
+        ]
+        for i, (content, mtype) in enumerate(messages):
+            ath = athletes[i % len(athletes)]
+            s.add(GroupMessage(group_id=g1.id, author_athlete_id=ath.id, content=content, message_type=mtype))
+        s.flush()
+
+        # Add kudos between athletes
+        if len(athletes) >= 2:
+            s.add(Kudos(from_athlete_id=athletes[0].id, to_athlete_id=athletes[1].id))
+            s.add(Kudos(from_athlete_id=athletes[1].id, to_athlete_id=athletes[0].id))
+        if len(athletes) >= 3:
+            s.add(Kudos(from_athlete_id=athletes[2].id, to_athlete_id=athletes[0].id))
+
+
 def main() -> None:
     run_migrations()
     seed_sessions()
     seed_users_athletes()
     backfill_plan_day_sessions()
     seed_organization()
+    seed_community()
     print("Seeding complete")
 
 
