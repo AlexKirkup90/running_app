@@ -790,6 +790,63 @@ def list_sync_logs(
 
 # ── Community & Social (Phase 7) ─────────────────────────────────────────
 
+@router.get("/groups/discover", response_model=list[TrainingGroupOut], tags=["community"])
+def discover_groups(athlete: Annotated[TokenData, Depends(require_athlete)]):
+    """Discover public groups the athlete is NOT yet a member of."""
+    from sqlalchemy import func
+    from core.models import GroupMembership, TrainingGroup
+    with session_scope() as s:
+        my_group_ids = s.execute(
+            select(GroupMembership.group_id).where(GroupMembership.athlete_id == athlete.athlete_id)
+        ).scalars().all()
+        q = select(TrainingGroup).where(TrainingGroup.privacy == "public")
+        if my_group_ids:
+            q = q.where(TrainingGroup.id.notin_(my_group_ids))
+        groups = s.execute(q.order_by(TrainingGroup.name)).scalars().all()
+        result = []
+        for g in groups:
+            count = s.execute(
+                select(func.count()).select_from(GroupMembership).where(GroupMembership.group_id == g.id)
+            ).scalar() or 0
+            if count >= g.max_members:
+                continue
+            result.append(TrainingGroupOut(
+                id=g.id, name=g.name, description=g.description,
+                owner_user_id=g.owner_user_id, privacy=g.privacy,
+                max_members=g.max_members, member_count=count,
+                created_at=g.created_at,
+            ))
+        return result
+
+
+@router.post("/groups/{group_id}/join", response_model=MessageOut, status_code=201, tags=["community"])
+def join_group(group_id: int, athlete: Annotated[TokenData, Depends(require_athlete)]):
+    """Athlete joins a public group."""
+    from sqlalchemy import func
+    from core.models import GroupMembership, TrainingGroup
+    with session_scope() as s:
+        group = s.get(TrainingGroup, group_id)
+        if not group:
+            raise HTTPException(status_code=404, detail="Group not found")
+        if group.privacy != "public":
+            raise HTTPException(status_code=403, detail="Group is not public")
+        existing = s.execute(
+            select(GroupMembership).where(
+                GroupMembership.group_id == group_id,
+                GroupMembership.athlete_id == athlete.athlete_id,
+            )
+        ).scalar_one_or_none()
+        if existing:
+            raise HTTPException(status_code=409, detail="Already a member")
+        count = s.execute(
+            select(func.count()).select_from(GroupMembership).where(GroupMembership.group_id == group_id)
+        ).scalar() or 0
+        if count >= group.max_members:
+            raise HTTPException(status_code=409, detail="Group is full")
+        s.add(GroupMembership(group_id=group_id, athlete_id=athlete.athlete_id, role="member"))
+    return MessageOut(message="Joined group")
+
+
 @router.get("/groups", response_model=list[TrainingGroupOut], tags=["community"])
 def list_groups(current_user: Annotated[TokenData, Depends(get_current_user)]):
     """List training groups. Athletes see their groups; coaches see all."""
@@ -1075,6 +1132,44 @@ def join_challenge(challenge_id: int, athlete: Annotated[TokenData, Depends(requ
             raise HTTPException(status_code=409, detail="Already joined")
         s.add(ChallengeEntry(challenge_id=challenge_id, athlete_id=athlete.athlete_id))
     return MessageOut(message="Joined challenge")
+
+
+@router.post("/challenges/sync-progress", response_model=MessageOut, tags=["community"])
+def sync_challenge_progress(current_user: Annotated[TokenData, Depends(get_current_user)]):
+    """Recalculate all active challenge entries from training logs."""
+    from core.models import Challenge, ChallengeEntry
+    from core.services.community import aggregate_challenge_metric
+    with session_scope() as s:
+        challenges = s.execute(
+            select(Challenge).where(Challenge.status == "active")
+        ).scalars().all()
+        updated = 0
+        for ch in challenges:
+            entries = s.execute(
+                select(ChallengeEntry).where(ChallengeEntry.challenge_id == ch.id)
+            ).scalars().all()
+            for entry in entries:
+                logs = s.execute(
+                    select(TrainingLog).where(
+                        TrainingLog.athlete_id == entry.athlete_id,
+                        TrainingLog.date >= ch.start_date,
+                        TrainingLog.date <= ch.end_date,
+                    )
+                ).scalars().all()
+                log_dicts = [
+                    {
+                        "distance_km": float(l.distance_km),
+                        "duration_min": float(l.duration_min),
+                        "date": l.date,
+                        "elevation_gain_m": 0,
+                    }
+                    for l in logs
+                ]
+                new_progress = aggregate_challenge_metric(log_dicts, ch.challenge_type)
+                entry.progress = round(new_progress, 2)
+                entry.completed = new_progress >= ch.target_value
+                updated += 1
+    return MessageOut(message=f"Synced {updated} challenge entries")
 
 
 @router.get("/kudos", response_model=list[KudosOut], tags=["community"])

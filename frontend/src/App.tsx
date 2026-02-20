@@ -11,6 +11,7 @@ import { CoachCommandCenter } from "@/pages/coach/CommandCenter";
 import { CoachOrganization } from "@/pages/coach/Organization";
 import { CoachTeam } from "@/pages/coach/Team";
 import { CoachAssignments } from "@/pages/coach/Assignments";
+import { CoachCommunity } from "@/pages/coach/Community";
 import { AthleteDashboard } from "@/pages/athlete/Dashboard";
 import { AthleteCheckIn } from "@/pages/athlete/CheckIn";
 import { AthleteLog } from "@/pages/athlete/Log";
@@ -53,6 +54,7 @@ function AppRoutes() {
         <Route path="/coach/organization" element={<CoachOrganization />} />
         <Route path="/coach/team" element={<CoachTeam />} />
         <Route path="/coach/assignments" element={<CoachAssignments />} />
+        <Route path="/coach/community" element={<CoachCommunity />} />
       </Route>
 
       {/* Athlete routes */}

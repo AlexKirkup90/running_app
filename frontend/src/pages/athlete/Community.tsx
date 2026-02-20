@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   fetchGroups,
   fetchChallenges,
@@ -7,9 +7,15 @@ import {
   fetchGroupLeaderboard,
   fetchChallengeEntries,
   fetchGroupMessages,
+  postGroupMessage,
+  discoverGroups,
+  joinGroup,
+  joinChallenge,
 } from "@/api/client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Users,
@@ -19,10 +25,19 @@ import {
   MessageCircle,
   Flame,
   Clock,
+  Send,
+  Search,
+  UserPlus,
 } from "lucide-react";
+import type { ChallengeEntry } from "@/api/types";
+import { useAuthStore } from "@/stores/auth";
 
 export function AthleteCommunity() {
+  const queryClient = useQueryClient();
+  const { athleteId } = useAuthStore();
   const [selectedGroupId, setSelectedGroupId] = useState<number | null>(null);
+  const [messageText, setMessageText] = useState("");
+  const [showDiscover, setShowDiscover] = useState(false);
 
   const { data: groups, isLoading: groupsLoading } = useQuery({
     queryKey: ["groups"],
@@ -49,6 +64,39 @@ export function AthleteCommunity() {
     queryKey: ["group-messages", selectedGroupId],
     queryFn: () => fetchGroupMessages(selectedGroupId!, 20),
     enabled: !!selectedGroupId,
+  });
+
+  const { data: discoverableGroups } = useQuery({
+    queryKey: ["discover-groups"],
+    queryFn: discoverGroups,
+    enabled: showDiscover,
+  });
+
+  const sendMessageMut = useMutation({
+    mutationFn: (content: string) =>
+      postGroupMessage(selectedGroupId!, content),
+    onSuccess: () => {
+      setMessageText("");
+      queryClient.invalidateQueries({
+        queryKey: ["group-messages", selectedGroupId],
+      });
+    },
+  });
+
+  const joinGroupMut = useMutation({
+    mutationFn: joinGroup,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["groups"] });
+      queryClient.invalidateQueries({ queryKey: ["discover-groups"] });
+    },
+  });
+
+  const joinChallengeMut = useMutation({
+    mutationFn: joinChallenge,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["challenges"] });
+      queryClient.invalidateQueries({ queryKey: ["challenge-entries"] });
+    },
   });
 
   // Auto-select first group
@@ -92,10 +140,75 @@ export function AthleteCommunity() {
 
         {/* Groups Tab */}
         <TabsContent value="groups" className="space-y-4">
-          {!groups?.length ? (
+          {/* Discover Groups Toggle */}
+          <div className="flex justify-end">
+            <Button
+              size="sm"
+              variant={showDiscover ? "default" : "outline"}
+              className="gap-1"
+              onClick={() => setShowDiscover(!showDiscover)}
+            >
+              <Search className="h-4 w-4" />
+              {showDiscover ? "Back to My Groups" : "Discover Groups"}
+            </Button>
+          </div>
+
+          {joinGroupMut.isSuccess && (
+            <div className="rounded-md bg-emerald-50 px-4 py-2 text-sm text-emerald-800">
+              Joined group!
+            </div>
+          )}
+
+          {/* Discover Mode */}
+          {showDiscover ? (
+            <div className="space-y-3">
+              <h3 className="font-semibold text-sm text-muted-foreground uppercase tracking-wide">
+                Public Groups You Can Join
+              </h3>
+              {!discoverableGroups?.length ? (
+                <Card>
+                  <CardContent className="py-10 text-center text-muted-foreground">
+                    No new groups to discover right now.
+                  </CardContent>
+                </Card>
+              ) : (
+                discoverableGroups.map((g) => (
+                  <Card key={g.id}>
+                    <CardContent className="p-4">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <div className="font-medium">{g.name}</div>
+                          {g.description && (
+                            <div className="text-sm text-muted-foreground mt-1">
+                              {g.description}
+                            </div>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Badge variant="secondary">
+                            <Users className="mr-1 h-3 w-3" />
+                            {g.member_count}/{g.max_members}
+                          </Badge>
+                          <Button
+                            size="sm"
+                            className="gap-1"
+                            onClick={() => joinGroupMut.mutate(g.id)}
+                            disabled={joinGroupMut.isPending}
+                          >
+                            <UserPlus className="h-3 w-3" />
+                            Join
+                          </Button>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))
+              )}
+            </div>
+          ) : !groups?.length ? (
             <Card>
               <CardContent className="py-10 text-center text-muted-foreground">
-                No groups yet. Ask your coach to create one!
+                No groups yet. Use "Discover Groups" to find and join one!
               </CardContent>
             </Card>
           ) : (
@@ -189,7 +302,7 @@ export function AthleteCommunity() {
                     </CardContent>
                   </Card>
 
-                  {/* Recent Messages */}
+                  {/* Group Chat */}
                   <Card>
                     <CardHeader className="pb-3">
                       <CardTitle className="flex items-center gap-2 text-base">
@@ -197,10 +310,10 @@ export function AthleteCommunity() {
                         Group Chat
                       </CardTitle>
                     </CardHeader>
-                    <CardContent>
+                    <CardContent className="space-y-3">
                       {!messages?.length ? (
                         <p className="text-sm text-muted-foreground">
-                          No messages yet
+                          No messages yet. Be the first to say something!
                         </p>
                       ) : (
                         <div className="space-y-3 max-h-64 overflow-y-auto">
@@ -211,7 +324,10 @@ export function AthleteCommunity() {
                                   {msg.author_name}
                                 </span>
                                 {msg.message_type !== "text" && (
-                                  <Badge variant="outline" className="text-xs">
+                                  <Badge
+                                    variant="outline"
+                                    className="text-xs"
+                                  >
                                     {msg.message_type}
                                   </Badge>
                                 )}
@@ -230,6 +346,41 @@ export function AthleteCommunity() {
                           ))}
                         </div>
                       )}
+
+                      {/* Message Input */}
+                      <div className="flex gap-2 border-t pt-3">
+                        <Input
+                          placeholder="Type a message..."
+                          value={messageText}
+                          onChange={(e) => setMessageText(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (
+                              e.key === "Enter" &&
+                              !e.shiftKey &&
+                              messageText.trim()
+                            ) {
+                              e.preventDefault();
+                              sendMessageMut.mutate(messageText.trim());
+                            }
+                          }}
+                        />
+                        <Button
+                          size="icon"
+                          disabled={
+                            !messageText.trim() || sendMessageMut.isPending
+                          }
+                          onClick={() =>
+                            sendMessageMut.mutate(messageText.trim())
+                          }
+                        >
+                          <Send className="h-4 w-4" />
+                        </Button>
+                      </div>
+                      {sendMessageMut.isError && (
+                        <p className="text-xs text-red-600">
+                          Failed to send message. Try again.
+                        </p>
+                      )}
                     </CardContent>
                   </Card>
                 </div>
@@ -240,6 +391,16 @@ export function AthleteCommunity() {
 
         {/* Challenges Tab */}
         <TabsContent value="challenges" className="space-y-4">
+          {joinChallengeMut.isSuccess && (
+            <div className="rounded-md bg-emerald-50 px-4 py-2 text-sm text-emerald-800">
+              Joined challenge!
+            </div>
+          )}
+          {joinChallengeMut.isError && (
+            <div className="rounded-md bg-red-50 px-4 py-2 text-sm text-red-800">
+              {(joinChallengeMut.error as Error).message}
+            </div>
+          )}
           {!challenges?.length ? (
             <Card>
               <CardContent className="py-10 text-center text-muted-foreground">
@@ -249,7 +410,13 @@ export function AthleteCommunity() {
           ) : (
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
               {challenges.map((c) => (
-                <ChallengeCard key={c.id} challenge={c} />
+                <ChallengeCard
+                  key={c.id}
+                  challenge={c}
+                  athleteId={athleteId}
+                  onJoin={() => joinChallengeMut.mutate(c.id)}
+                  isJoining={joinChallengeMut.isPending}
+                />
               ))}
             </div>
           )}
@@ -306,6 +473,9 @@ export function AthleteCommunity() {
 
 function ChallengeCard({
   challenge,
+  athleteId,
+  onJoin,
+  isJoining,
 }: {
   challenge: {
     id: number;
@@ -316,11 +486,18 @@ function ChallengeCard({
     end_date: string;
     participant_count: number;
   };
+  athleteId: number | null;
+  onJoin: () => void;
+  isJoining: boolean;
 }) {
   const { data: entries } = useQuery({
     queryKey: ["challenge-entries", challenge.id],
     queryFn: () => fetchChallengeEntries(challenge.id),
   });
+
+  const alreadyJoined = entries?.some(
+    (e: ChallengeEntry) => e.athlete_id === athleteId,
+  );
 
   const daysLeft = Math.max(
     0,
@@ -353,16 +530,31 @@ function ChallengeCard({
           </span>
           <span className="text-muted-foreground">{daysLeft}d left</span>
         </div>
-        <div className="flex items-center gap-2 text-sm">
-          <Users className="h-3 w-3" />
-          <span>{challenge.participant_count} participants</span>
+        <div className="flex items-center justify-between text-sm">
+          <div className="flex items-center gap-2">
+            <Users className="h-3 w-3" />
+            <span>{challenge.participant_count} participants</span>
+          </div>
+          {!alreadyJoined ? (
+            <Button
+              size="sm"
+              className="gap-1"
+              onClick={onJoin}
+              disabled={isJoining}
+            >
+              <UserPlus className="h-3 w-3" />
+              {isJoining ? "Joining..." : "Join"}
+            </Button>
+          ) : (
+            <Badge variant="success">Joined</Badge>
+          )}
         </div>
         {entries && entries.length > 0 && (
           <div className="space-y-1.5 border-t pt-3">
             <div className="text-xs font-medium text-muted-foreground uppercase">
               Rankings
             </div>
-            {entries.slice(0, 5).map((e, i) => (
+            {entries.slice(0, 5).map((e: ChallengeEntry, i: number) => (
               <div
                 key={e.id}
                 className="flex items-center justify-between text-sm"

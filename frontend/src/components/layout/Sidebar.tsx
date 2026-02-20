@@ -21,6 +21,7 @@ const coachLinks = [
   { to: "/coach", icon: LayoutDashboard, label: "Dashboard" },
   { to: "/coach/clients", icon: Users, label: "Clients" },
   { to: "/coach/command-center", icon: AlertTriangle, label: "Command Center" },
+  { to: "/coach/community", icon: HeartHandshake, label: "Community" },
   { to: "/coach/organization", icon: Building2, label: "Organization" },
   { to: "/coach/team", icon: Shield, label: "Team" },
   { to: "/coach/assignments", icon: ArrowRightLeft, label: "Assignments" },

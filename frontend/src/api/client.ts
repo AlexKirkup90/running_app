@@ -284,6 +284,18 @@ export function fetchGroups(): Promise<TrainingGroup[]> {
   return request("/groups");
 }
 
+export function discoverGroups(): Promise<TrainingGroup[]> {
+  return request("/groups/discover");
+}
+
+export function joinGroup(groupId: number): Promise<MessageResponse> {
+  return request(`/groups/${groupId}/join`, { method: "POST" });
+}
+
+export function syncChallengeProgress(): Promise<MessageResponse> {
+  return request("/challenges/sync-progress", { method: "POST" });
+}
+
 export function createGroup(data: {
   name: string;
   description?: string;
