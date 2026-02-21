@@ -266,3 +266,80 @@ export interface ActivityFeedItem {
   training_log_id: number;
   kudos_count: number;
 }
+
+// --- Phase 1: Plan Builder ---
+
+export interface PlanPreviewWeek {
+  week_number: number;
+  phase: string;
+  week_start: string;
+  week_end: string;
+  target_load: number;
+  sessions_order: string[];
+}
+
+export interface PlanPreviewDay {
+  week_number: number;
+  session_day: string;
+  session_name: string;
+  phase: string;
+}
+
+export interface PlanPreview {
+  weeks: PlanPreviewWeek[];
+  days: PlanPreviewDay[];
+}
+
+export interface PlanCreateResult {
+  plan_id: number;
+  message: string;
+}
+
+// --- Phase 1: Session Library ---
+
+export interface SessionTemplate {
+  id: number;
+  name: string;
+  category: string;
+  intent: string;
+  energy_system: string;
+  tier: string;
+  is_treadmill: boolean;
+  duration_min: number;
+  structure_json: Record<string, unknown>;
+  targets_json: Record<string, unknown>;
+  progression_json: Record<string, unknown>;
+  regression_json: Record<string, unknown>;
+  prescription: string;
+  coaching_notes: string;
+}
+
+// --- Phase 1: Intervention Stats ---
+
+export interface InterventionStats {
+  open_count: number;
+  high_priority: number;
+  actionable_now: number;
+  snoozed: number;
+  sla_due_24h: number;
+  sla_due_72h: number;
+  median_age_hours: number;
+  oldest_age_hours: number;
+}
+
+// --- Phase 1: Casework ---
+
+export interface TimelineEntry {
+  when: string;
+  source: string;
+  title: string;
+  detail: string;
+}
+
+export interface CoachNote {
+  id: number;
+  athlete_id: number;
+  note: string;
+  due_date: string | null;
+  completed: boolean;
+}

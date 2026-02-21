@@ -6,10 +6,12 @@ import type {
   CheckIn,
   CoachClientRow,
   CoachDashboard,
+  CoachNote,
   Event,
   GroupMember,
   GroupMessage,
   Intervention,
+  InterventionStats,
   Kudos,
   LeaderboardEntry,
   MessageResponse,
@@ -17,9 +19,13 @@ import type {
   OrgCoach,
   Organization,
   Plan,
+  PlanCreateResult,
   PlanDaySession,
+  PlanPreview,
   PlanWeek,
   Recommendation,
+  SessionTemplate,
+  TimelineEntry,
   TokenResponse,
   TrainingGroup,
   TrainingLog,
@@ -409,6 +415,173 @@ export function giveKudos(
   const params = new URLSearchParams({ to_athlete_id: String(toAthleteId) });
   if (trainingLogId) params.set("training_log_id", String(trainingLogId));
   return request(`/kudos?${params}`, { method: "POST" });
+}
+
+// --- Phase 1: Plan Builder ---
+
+export function previewPlan(data: {
+  athlete_id: number;
+  race_goal: string;
+  weeks: number;
+  sessions_per_week: number;
+  max_session_min: number;
+  start_date: string;
+}): Promise<PlanPreview> {
+  return request("/plans/preview", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export function createPlan(data: {
+  athlete_id: number;
+  race_goal: string;
+  weeks: number;
+  sessions_per_week: number;
+  max_session_min: number;
+  start_date: string;
+}): Promise<PlanCreateResult> {
+  return request("/plans", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export function toggleWeekLock(
+  planId: number,
+  weekNumber: number,
+): Promise<MessageResponse> {
+  return request(`/plans/${planId}/weeks/${weekNumber}/lock`, {
+    method: "PUT",
+  });
+}
+
+export function swapSession(
+  planId: number,
+  weekNumber: number,
+  sessionDay: string,
+  newSessionName: string,
+): Promise<MessageResponse> {
+  return request(
+    `/plans/${planId}/weeks/${weekNumber}/sessions/${sessionDay}?new_session_name=${encodeURIComponent(newSessionName)}`,
+    { method: "PUT" },
+  );
+}
+
+export function regenerateWeek(
+  planId: number,
+  weekNumber: number,
+): Promise<MessageResponse> {
+  return request(`/plans/${planId}/weeks/${weekNumber}/regenerate`, {
+    method: "POST",
+  });
+}
+
+// --- Phase 1: Session Library ---
+
+export function fetchSessions(params?: {
+  category?: string;
+  intent?: string;
+  is_treadmill?: boolean;
+}): Promise<SessionTemplate[]> {
+  const search = new URLSearchParams();
+  if (params?.category) search.set("category", params.category);
+  if (params?.intent) search.set("intent", params.intent);
+  if (params?.is_treadmill !== undefined)
+    search.set("is_treadmill", String(params.is_treadmill));
+  return request(`/sessions?${search}`);
+}
+
+export function fetchSession(sessionId: number): Promise<SessionTemplate> {
+  return request(`/sessions/${sessionId}`);
+}
+
+export function createSession(
+  data: Omit<SessionTemplate, "id">,
+): Promise<SessionTemplate> {
+  return request("/sessions", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export function updateSession(
+  sessionId: number,
+  data: Omit<SessionTemplate, "id">,
+): Promise<SessionTemplate> {
+  return request(`/sessions/${sessionId}`, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+}
+
+export function deleteSession(sessionId: number): Promise<MessageResponse> {
+  return request(`/sessions/${sessionId}`, { method: "DELETE" });
+}
+
+export function fetchSessionCategories(): Promise<string[]> {
+  return request("/sessions/categories");
+}
+
+// --- Phase 1: Intervention Stats & Batch ---
+
+export function fetchInterventionStats(): Promise<InterventionStats> {
+  return request("/interventions/stats");
+}
+
+export function batchDecideInterventions(data: {
+  intervention_ids: number[];
+  decision: string;
+  note?: string;
+  modified_action?: string;
+}): Promise<MessageResponse> {
+  return request("/interventions/batch-decide", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+// --- Phase 1: Casework ---
+
+export function fetchAthleteTimeline(
+  athleteId: number,
+  limit = 120,
+): Promise<TimelineEntry[]> {
+  return request(`/athletes/${athleteId}/timeline?limit=${limit}`);
+}
+
+export function fetchAthleteNotes(athleteId: number): Promise<CoachNote[]> {
+  return request(`/athletes/${athleteId}/notes`);
+}
+
+export function createAthleteNote(
+  athleteId: number,
+  data: { note: string; due_date?: string | null },
+): Promise<CoachNote> {
+  return request(`/athletes/${athleteId}/notes`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export function updateAthleteNote(
+  athleteId: number,
+  noteId: number,
+  completed: boolean,
+): Promise<CoachNote> {
+  return request(
+    `/athletes/${athleteId}/notes/${noteId}?completed=${completed}`,
+    { method: "PUT" },
+  );
+}
+
+export function deleteAthleteNote(
+  athleteId: number,
+  noteId: number,
+): Promise<MessageResponse> {
+  return request(`/athletes/${athleteId}/notes/${noteId}`, {
+    method: "DELETE",
+  });
 }
 
 export { ApiError };

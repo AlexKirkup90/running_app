@@ -13,6 +13,8 @@ import {
   Shield,
   ArrowRightLeft,
   HeartHandshake,
+  Hammer,
+  BookOpen,
 } from "lucide-react";
 import { useAuthStore } from "@/stores/auth";
 import { cn } from "@/lib/utils";
@@ -20,6 +22,8 @@ import { cn } from "@/lib/utils";
 const coachLinks = [
   { to: "/coach", icon: LayoutDashboard, label: "Dashboard" },
   { to: "/coach/clients", icon: Users, label: "Clients" },
+  { to: "/coach/plan-builder", icon: Hammer, label: "Plan Builder" },
+  { to: "/coach/session-library", icon: BookOpen, label: "Session Library" },
   { to: "/coach/command-center", icon: AlertTriangle, label: "Command Center" },
   { to: "/coach/community", icon: HeartHandshake, label: "Community" },
   { to: "/coach/organization", icon: Building2, label: "Organization" },

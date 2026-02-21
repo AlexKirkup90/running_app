@@ -12,6 +12,8 @@ import { CoachOrganization } from "@/pages/coach/Organization";
 import { CoachTeam } from "@/pages/coach/Team";
 import { CoachAssignments } from "@/pages/coach/Assignments";
 import { CoachCommunity } from "@/pages/coach/Community";
+import { CoachPlanBuilder } from "@/pages/coach/PlanBuilder";
+import { CoachSessionLibrary } from "@/pages/coach/SessionLibrary";
 import { AthleteDashboard } from "@/pages/athlete/Dashboard";
 import { AthleteCheckIn } from "@/pages/athlete/CheckIn";
 import { AthleteLog } from "@/pages/athlete/Log";
@@ -51,6 +53,8 @@ function AppRoutes() {
         <Route path="/coach" element={<CoachDashboard />} />
         <Route path="/coach/clients" element={<CoachClients />} />
         <Route path="/coach/command-center" element={<CoachCommandCenter />} />
+        <Route path="/coach/plan-builder" element={<CoachPlanBuilder />} />
+        <Route path="/coach/session-library" element={<CoachSessionLibrary />} />
         <Route path="/coach/organization" element={<CoachOrganization />} />
         <Route path="/coach/team" element={<CoachTeam />} />
         <Route path="/coach/assignments" element={<CoachAssignments />} />

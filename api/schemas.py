@@ -350,3 +350,112 @@ class LeaderboardEntryOut(BaseModel):
     name: str
     value: float
     rank: int
+
+
+# --- Plan Builder (Phase 1) ---
+
+class PlanPreviewWeek(BaseModel):
+    week_number: int
+    phase: str
+    week_start: date
+    week_end: date
+    target_load: float
+    sessions_order: list[str]
+
+
+class PlanPreviewDay(BaseModel):
+    week_number: int
+    session_day: date
+    session_name: str
+    phase: str
+
+
+class PlanPreviewOut(BaseModel):
+    weeks: list[PlanPreviewWeek]
+    days: list[PlanPreviewDay]
+
+
+class PlanCreateOut(BaseModel):
+    plan_id: int
+    message: str
+
+
+# --- Session Library (Phase 1) ---
+
+class SessionLibraryOut(BaseModel):
+    id: int
+    name: str
+    category: str
+    intent: str
+    energy_system: str
+    tier: str
+    is_treadmill: bool
+    duration_min: int
+    structure_json: dict
+    targets_json: dict
+    progression_json: dict
+    regression_json: dict
+    prescription: str
+    coaching_notes: str
+
+    model_config = {"from_attributes": True}
+
+
+class SessionLibraryCreateInput(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    category: str = Field(min_length=1, max_length=80)
+    intent: str = Field(default="general", max_length=40)
+    energy_system: str = Field(default="aerobic", max_length=40)
+    tier: str = Field(default="medium", max_length=30)
+    is_treadmill: bool = False
+    duration_min: int = Field(ge=10, le=300)
+    structure_json: dict = Field(default_factory=dict)
+    targets_json: dict = Field(default_factory=dict)
+    progression_json: dict = Field(default_factory=dict)
+    regression_json: dict = Field(default_factory=dict)
+    prescription: str = Field(default="", max_length=2000)
+    coaching_notes: str = Field(default="", max_length=2000)
+
+
+# --- Intervention Stats (Phase 1) ---
+
+class InterventionStatsOut(BaseModel):
+    open_count: int
+    high_priority: int
+    actionable_now: int
+    snoozed: int
+    sla_due_24h: int
+    sla_due_72h: int
+    median_age_hours: float
+    oldest_age_hours: float
+
+
+# --- Casework (Phase 1) ---
+
+class TimelineEntry(BaseModel):
+    when: datetime
+    source: str
+    title: str
+    detail: str
+
+
+class CoachNoteOut(BaseModel):
+    id: int
+    athlete_id: int
+    note: str
+    due_date: Optional[date] = None
+    completed: bool
+
+    model_config = {"from_attributes": True}
+
+
+class CoachNoteCreateInput(BaseModel):
+    note: str = Field(min_length=1, max_length=2000)
+    due_date: Optional[date] = None
+
+
+class BatchDecisionInput(BaseModel):
+    intervention_ids: list[int] = Field(min_length=1)
+    decision: str
+    note: str = Field(default="", max_length=1000)
+    modified_action: Optional[str] = None

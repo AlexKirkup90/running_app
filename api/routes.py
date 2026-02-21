@@ -7,7 +7,7 @@ unless otherwise noted. Coach-only endpoints require role=coach.
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -25,6 +25,7 @@ from api.auth import (
 from api.schemas import (
     AssignAthleteInput,
     AthleteOut,
+    BatchDecisionInput,
     ChallengeCreateInput,
     ChallengeEntryOut,
     ChallengeOut,
@@ -32,19 +33,29 @@ from api.schemas import (
     CheckInOut,
     CoachClientRow,
     CoachDashboardOut,
+    CoachNoteCreateInput,
+    CoachNoteOut,
     CreateOrgInput,
     EventOut,
     GroupMemberOut,
     GroupMessageCreateInput,
     GroupMessageOut,
     InterventionOut,
+    InterventionStatsOut,
     KudosOut,
     LeaderboardEntryOut,
     MessageOut,
+    PlanCreateOut,
     PlanDaySessionOut,
     PlanOut,
+    PlanPreviewDay,
+    PlanPreviewOut,
+    PlanPreviewWeek,
     PlanWeekOut,
     RecommendationOut,
+    SessionLibraryCreateInput,
+    SessionLibraryOut,
+    TimelineEntry,
     TrainingGroupCreateInput,
     TrainingGroupOut,
     TrainingLogOut,
@@ -73,6 +84,7 @@ from core.validators import (
     ClientCreateInput,
     EventCreateInput,
     InterventionDecisionInput,
+    PlanCreateInput,
     TrainingLogInput,
 )
 
@@ -1269,6 +1281,424 @@ def activity_feed(
                 "kudos_count": kudos_count,
             })
         return result
+
+
+# ── Plan Builder ──────────────────────────────────────────────────────────
+
+@router.post("/plans/preview", response_model=PlanPreviewOut, tags=["plans"])
+def preview_plan(body: PlanCreateInput, coach: Annotated[TokenData, Depends(require_coach)]):
+    """Generate a plan preview without saving. Coach-only."""
+    from core.services.planning import assign_week_sessions, generate_plan_weeks
+    week_rows = generate_plan_weeks(body.start_date, body.weeks, body.race_goal, body.sessions_per_week, body.max_session_min)
+    preview_weeks = []
+    preview_days = []
+    for wr in week_rows:
+        preview_weeks.append(PlanPreviewWeek(
+            week_number=wr["week_number"], phase=wr["phase"],
+            week_start=wr["week_start"], week_end=wr["week_end"],
+            target_load=wr["target_load"], sessions_order=wr["sessions_order"],
+        ))
+        day_assignments = assign_week_sessions(wr["week_start"], wr["sessions_order"])
+        for da in day_assignments:
+            preview_days.append(PlanPreviewDay(
+                week_number=wr["week_number"], session_day=da["session_day"],
+                session_name=da["session_name"], phase=wr["phase"],
+            ))
+    return PlanPreviewOut(weeks=preview_weeks, days=preview_days)
+
+
+@router.post("/plans", response_model=PlanCreateOut, status_code=201, tags=["plans"])
+def create_plan(body: PlanCreateInput, coach: Annotated[TokenData, Depends(require_coach)]):
+    """Create and publish a training plan. Archives existing active plans. Coach-only."""
+    from core.models import CoachActionLog
+    from core.services.planning import assign_week_sessions, generate_plan_weeks
+    with session_scope() as s:
+        existing_plans = s.execute(
+            select(Plan).where(Plan.athlete_id == body.athlete_id, Plan.status == "active")
+        ).scalars().all()
+        for ep in existing_plans:
+            ep.status = "archived"
+        future_sessions = s.execute(
+            select(PlanDaySession).where(
+                PlanDaySession.athlete_id == body.athlete_id,
+                PlanDaySession.session_day >= body.start_date,
+            )
+        ).scalars().all()
+        for fs in future_sessions:
+            s.delete(fs)
+        plan = Plan(
+            athlete_id=body.athlete_id, race_goal=body.race_goal,
+            weeks=body.weeks, sessions_per_week=body.sessions_per_week,
+            max_session_min=body.max_session_min, start_date=body.start_date,
+            status="active",
+        )
+        s.add(plan)
+        s.flush()
+        week_rows = generate_plan_weeks(body.start_date, body.weeks, body.race_goal, body.sessions_per_week, body.max_session_min)
+        for wr in week_rows:
+            pw = PlanWeek(
+                plan_id=plan.id, week_number=wr["week_number"], phase=wr["phase"],
+                week_start=wr["week_start"], week_end=wr["week_end"],
+                sessions_order=wr["sessions_order"], target_load=wr["target_load"],
+                locked=False,
+            )
+            s.add(pw)
+            s.flush()
+            day_assignments = assign_week_sessions(wr["week_start"], wr["sessions_order"])
+            for da in day_assignments:
+                pds = PlanDaySession(
+                    plan_week_id=pw.id, athlete_id=body.athlete_id,
+                    session_day=da["session_day"], session_name=da["session_name"],
+                    source_template_name=da["session_name"], status="planned",
+                )
+                s.add(pds)
+        s.add(CoachActionLog(
+            coach_user_id=coach.user_id, athlete_id=body.athlete_id,
+            action="plan_created", payload={"plan_id": plan.id, "race_goal": body.race_goal, "weeks": body.weeks},
+        ))
+        return PlanCreateOut(plan_id=plan.id, message="Plan created successfully")
+
+
+@router.put("/plans/{plan_id}/weeks/{week_number}/lock", response_model=MessageOut, tags=["plans"])
+def toggle_week_lock(plan_id: int, week_number: int, coach: Annotated[TokenData, Depends(require_coach)]):
+    """Toggle the locked status of a plan week. Coach-only."""
+    with session_scope() as s:
+        pw = s.execute(
+            select(PlanWeek).where(PlanWeek.plan_id == plan_id, PlanWeek.week_number == week_number)
+        ).scalar_one_or_none()
+        if not pw:
+            raise HTTPException(status_code=404, detail="Week not found")
+        pw.locked = not pw.locked
+        s.flush()
+        return MessageOut(message=f"Week {week_number} {'locked' if pw.locked else 'unlocked'}")
+
+
+@router.put("/plans/{plan_id}/weeks/{week_number}/sessions/{session_day}", response_model=MessageOut, tags=["plans"])
+def swap_session(
+    plan_id: int, week_number: int, session_day: date,
+    new_session_name: str = Query(...),
+    coach: Annotated[TokenData, Depends(require_coach)] = None,
+):
+    """Swap a session in a plan week. Blocked if locked. Coach-only."""
+    with session_scope() as s:
+        pw = s.execute(
+            select(PlanWeek).where(PlanWeek.plan_id == plan_id, PlanWeek.week_number == week_number)
+        ).scalar_one_or_none()
+        if not pw:
+            raise HTTPException(status_code=404, detail="Week not found")
+        if pw.locked:
+            raise HTTPException(status_code=400, detail="Cannot modify a locked week")
+        pds = s.execute(
+            select(PlanDaySession).where(
+                PlanDaySession.plan_week_id == pw.id, PlanDaySession.session_day == session_day,
+            )
+        ).scalar_one_or_none()
+        if not pds:
+            raise HTTPException(status_code=404, detail="Day session not found")
+        old_name = pds.session_name
+        pds.session_name = new_session_name
+        pds.source_template_name = new_session_name
+        all_day_sessions = s.execute(
+            select(PlanDaySession).where(PlanDaySession.plan_week_id == pw.id).order_by(PlanDaySession.session_day)
+        ).scalars().all()
+        pw.sessions_order = [ds.session_name for ds in all_day_sessions]
+        s.flush()
+        return MessageOut(message=f"Swapped '{old_name}' -> '{new_session_name}'")
+
+
+@router.post("/plans/{plan_id}/weeks/{week_number}/regenerate", response_model=MessageOut, tags=["plans"])
+def regenerate_week(plan_id: int, week_number: int, coach: Annotated[TokenData, Depends(require_coach)]):
+    """Regenerate all sessions for a plan week. Blocked if locked. Coach-only."""
+    from core.services.planning import assign_week_sessions, default_phase_session_tokens
+    with session_scope() as s:
+        plan = s.get(Plan, plan_id)
+        if not plan:
+            raise HTTPException(status_code=404, detail="Plan not found")
+        pw = s.execute(
+            select(PlanWeek).where(PlanWeek.plan_id == plan_id, PlanWeek.week_number == week_number)
+        ).scalar_one_or_none()
+        if not pw:
+            raise HTTPException(status_code=404, detail="Week not found")
+        if pw.locked:
+            raise HTTPException(status_code=400, detail="Cannot regenerate a locked week")
+        existing = s.execute(
+            select(PlanDaySession).where(PlanDaySession.plan_week_id == pw.id)
+        ).scalars().all()
+        for ex in existing:
+            s.delete(ex)
+        s.flush()
+        session_tokens = default_phase_session_tokens(pw.phase, plan.sessions_per_week, race_goal=plan.race_goal)
+        day_assignments = assign_week_sessions(pw.week_start, session_tokens)
+        for da in day_assignments:
+            pds = PlanDaySession(
+                plan_week_id=pw.id, athlete_id=plan.athlete_id,
+                session_day=da["session_day"], session_name=da["session_name"],
+                source_template_name=da["session_name"], status="planned",
+            )
+            s.add(pds)
+        pw.sessions_order = session_tokens
+        s.flush()
+        return MessageOut(message=f"Week {week_number} regenerated with {len(day_assignments)} sessions")
+
+
+# ── Session Library ──────────────────────────────────────────────────────
+
+@router.get("/sessions/categories", tags=["sessions"])
+def list_session_categories(current_user: Annotated[TokenData, Depends(get_current_user)]):
+    """List unique session categories from the library."""
+    from core.models import SessionLibrary
+    with session_scope() as s:
+        rows = s.execute(
+            select(SessionLibrary.category).distinct().order_by(SessionLibrary.category)
+        ).scalars().all()
+        return rows
+
+
+@router.get("/sessions", response_model=list[SessionLibraryOut], tags=["sessions"])
+def list_sessions(
+    coach: Annotated[TokenData, Depends(require_coach)],
+    category: Optional[str] = None,
+    intent: Optional[str] = None,
+    is_treadmill: Optional[bool] = None,
+):
+    """List session library templates. Coach-only."""
+    from core.models import SessionLibrary
+    with session_scope() as s:
+        q = select(SessionLibrary)
+        if category:
+            q = q.where(SessionLibrary.category == category)
+        if intent:
+            q = q.where(SessionLibrary.intent == intent)
+        if is_treadmill is not None:
+            q = q.where(SessionLibrary.is_treadmill == is_treadmill)
+        rows = s.execute(q.order_by(SessionLibrary.category, SessionLibrary.name)).scalars().all()
+        return [SessionLibraryOut.model_validate(r) for r in rows]
+
+
+@router.get("/sessions/{session_id}", response_model=SessionLibraryOut, tags=["sessions"])
+def get_session(session_id: int, coach: Annotated[TokenData, Depends(require_coach)]):
+    """Get a single session template. Coach-only."""
+    from core.models import SessionLibrary
+    with session_scope() as s:
+        session = s.get(SessionLibrary, session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return SessionLibraryOut.model_validate(session)
+
+
+@router.post("/sessions", response_model=SessionLibraryOut, status_code=201, tags=["sessions"])
+def create_session_template(body: SessionLibraryCreateInput, coach: Annotated[TokenData, Depends(require_coach)]):
+    """Create a session template. Coach-only."""
+    from core.models import SessionLibrary
+    with session_scope() as s:
+        existing = s.execute(select(SessionLibrary).where(SessionLibrary.name == body.name)).scalar_one_or_none()
+        if existing:
+            raise HTTPException(status_code=409, detail="Session with this name already exists")
+        session = SessionLibrary(
+            name=body.name, category=body.category, intent=body.intent,
+            energy_system=body.energy_system, tier=body.tier, is_treadmill=body.is_treadmill,
+            duration_min=body.duration_min, structure_json=body.structure_json,
+            targets_json=body.targets_json, progression_json=body.progression_json,
+            regression_json=body.regression_json, prescription=body.prescription,
+            coaching_notes=body.coaching_notes,
+        )
+        s.add(session)
+        s.flush()
+        return SessionLibraryOut.model_validate(session)
+
+
+@router.put("/sessions/{session_id}", response_model=SessionLibraryOut, tags=["sessions"])
+def update_session_template(session_id: int, body: SessionLibraryCreateInput, coach: Annotated[TokenData, Depends(require_coach)]):
+    """Update a session template. Coach-only."""
+    from core.models import SessionLibrary
+    with session_scope() as s:
+        session = s.get(SessionLibrary, session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+        if body.name != session.name:
+            conflict = s.execute(select(SessionLibrary).where(SessionLibrary.name == body.name)).scalar_one_or_none()
+            if conflict:
+                raise HTTPException(status_code=409, detail="Session with this name already exists")
+        session.name = body.name
+        session.category = body.category
+        session.intent = body.intent
+        session.energy_system = body.energy_system
+        session.tier = body.tier
+        session.is_treadmill = body.is_treadmill
+        session.duration_min = body.duration_min
+        session.structure_json = body.structure_json
+        session.targets_json = body.targets_json
+        session.progression_json = body.progression_json
+        session.regression_json = body.regression_json
+        session.prescription = body.prescription
+        session.coaching_notes = body.coaching_notes
+        s.flush()
+        return SessionLibraryOut.model_validate(session)
+
+
+@router.delete("/sessions/{session_id}", response_model=MessageOut, tags=["sessions"])
+def delete_session_template(session_id: int, coach: Annotated[TokenData, Depends(require_coach)]):
+    """Delete a session template. Coach-only."""
+    from core.models import SessionLibrary
+    with session_scope() as s:
+        session = s.get(SessionLibrary, session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+        s.delete(session)
+    return MessageOut(message="Session deleted")
+
+
+# ── Intervention Stats & Casework ────────────────────────────────────────
+
+@router.get("/interventions/stats", response_model=InterventionStatsOut, tags=["interventions"])
+def intervention_stats(coach: Annotated[TokenData, Depends(require_coach)]):
+    """Get queue statistics for the command center. Coach-only."""
+    now = datetime.utcnow()
+    with session_scope() as s:
+        open_items = s.execute(
+            select(CoachIntervention).where(CoachIntervention.status == "open")
+        ).scalars().all()
+        open_count = len(open_items)
+        high_priority = sum(1 for i in open_items if i.risk_score >= 0.7)
+        snoozed = sum(1 for i in open_items if i.cooldown_until and i.cooldown_until > now)
+        actionable_now = open_count - snoozed
+        ages_hours = []
+        for i in open_items:
+            if i.created_at:
+                age = (now - i.created_at).total_seconds() / 3600
+                ages_hours.append(age)
+        sla_24 = sum(1 for a in ages_hours if a >= 24)
+        sla_72 = sum(1 for a in ages_hours if a >= 72)
+        if ages_hours:
+            sorted_ages = sorted(ages_hours)
+            mid = len(sorted_ages) // 2
+            median = sorted_ages[mid] if len(sorted_ages) % 2 else (sorted_ages[mid - 1] + sorted_ages[mid]) / 2
+            oldest = max(ages_hours)
+        else:
+            median = 0.0
+            oldest = 0.0
+        return InterventionStatsOut(
+            open_count=open_count, high_priority=high_priority,
+            actionable_now=actionable_now, snoozed=snoozed,
+            sla_due_24h=sla_24, sla_due_72h=sla_72,
+            median_age_hours=round(median, 1), oldest_age_hours=round(oldest, 1),
+        )
+
+
+@router.post("/interventions/batch-decide", response_model=MessageOut, tags=["interventions"])
+def batch_decide_interventions(body: BatchDecisionInput, coach: Annotated[TokenData, Depends(require_coach)]):
+    """Apply the same decision to multiple interventions. Coach-only."""
+    from pages.coach import _apply_intervention_decision
+    with session_scope() as s:
+        applied = 0
+        for iid in body.intervention_ids:
+            rec = s.get(CoachIntervention, iid)
+            if rec and rec.status == "open":
+                _apply_intervention_decision(s, rec, body.decision, body.note, body.modified_action, coach.user_id)
+                applied += 1
+    return MessageOut(message=f"Applied '{body.decision}' to {applied} interventions")
+
+
+@router.get("/athletes/{athlete_id}/timeline", response_model=list[TimelineEntry], tags=["casework"])
+def get_athlete_timeline(
+    athlete_id: int,
+    coach: Annotated[TokenData, Depends(require_coach)],
+    limit: int = Query(120, le=300),
+):
+    """Get a unified timeline for an athlete. Coach-only."""
+    from core.models import CoachActionLog, CoachNotesTask
+    entries: list[dict] = []
+    with session_scope() as s:
+        actions = s.execute(
+            select(CoachActionLog).where(CoachActionLog.athlete_id == athlete_id)
+            .order_by(CoachActionLog.created_at.desc()).limit(50)
+        ).scalars().all()
+        for a in actions:
+            entries.append({"when": a.created_at, "source": "coach_action", "title": a.action, "detail": str(a.payload)})
+        logs = s.execute(
+            select(TrainingLog).where(TrainingLog.athlete_id == athlete_id)
+            .order_by(TrainingLog.date.desc()).limit(30)
+        ).scalars().all()
+        for l in logs:
+            pain = " [PAIN]" if l.pain_flag else ""
+            entries.append({"when": datetime.combine(l.date, datetime.min.time()), "source": "training_log",
+                          "title": l.session_category, "detail": f"{l.duration_min}min RPE:{l.rpe} Load:{l.load_score}{pain}"})
+        checkins = s.execute(
+            select(CheckIn).where(CheckIn.athlete_id == athlete_id)
+            .order_by(CheckIn.day.desc()).limit(30)
+        ).scalars().all()
+        for c in checkins:
+            score = readiness_score(c.sleep, c.energy, c.recovery, c.stress)
+            entries.append({"when": datetime.combine(c.day, datetime.min.time()), "source": "checkin",
+                          "title": f"Check-in ({readiness_band(score)})", "detail": f"Sleep:{c.sleep} Energy:{c.energy} Recovery:{c.recovery} Stress:{c.stress} -> {score:.1f}"})
+        events = s.execute(
+            select(Event).where(Event.athlete_id == athlete_id)
+        ).scalars().all()
+        for e in events:
+            entries.append({"when": datetime.combine(e.event_date, datetime.min.time()), "source": "event",
+                          "title": e.name, "detail": f"{e.distance}"})
+        notes = s.execute(
+            select(CoachNotesTask).where(CoachNotesTask.athlete_id == athlete_id)
+        ).scalars().all()
+        for n in notes:
+            when = datetime.combine(n.due_date, datetime.min.time()) if n.due_date else datetime.utcnow()
+            entries.append({"when": when, "source": "note", "title": "Coach Note", "detail": n.note})
+    entries.sort(key=lambda x: x["when"], reverse=True)
+    return [TimelineEntry(**e) for e in entries[:limit]]
+
+
+@router.get("/athletes/{athlete_id}/notes", response_model=list[CoachNoteOut], tags=["casework"])
+def list_athlete_notes(athlete_id: int, coach: Annotated[TokenData, Depends(require_coach)]):
+    """List notes/tasks for an athlete. Coach-only."""
+    from core.models import CoachNotesTask
+    with session_scope() as s:
+        rows = s.execute(
+            select(CoachNotesTask).where(CoachNotesTask.athlete_id == athlete_id)
+            .order_by(CoachNotesTask.id.desc())
+        ).scalars().all()
+        return [CoachNoteOut.model_validate(r) for r in rows]
+
+
+@router.post("/athletes/{athlete_id}/notes", response_model=CoachNoteOut, status_code=201, tags=["casework"])
+def create_athlete_note(athlete_id: int, body: CoachNoteCreateInput, coach: Annotated[TokenData, Depends(require_coach)]):
+    """Create a note/task for an athlete. Coach-only."""
+    from core.models import CoachActionLog, CoachNotesTask
+    with session_scope() as s:
+        note = CoachNotesTask(athlete_id=athlete_id, note=body.note, due_date=body.due_date)
+        s.add(note)
+        s.add(CoachActionLog(coach_user_id=coach.user_id, athlete_id=athlete_id, action="note_created", payload={"note": body.note}))
+        s.flush()
+        return CoachNoteOut.model_validate(note)
+
+
+@router.put("/athletes/{athlete_id}/notes/{note_id}", response_model=CoachNoteOut, tags=["casework"])
+def update_athlete_note(
+    athlete_id: int, note_id: int,
+    completed: Optional[bool] = Query(None),
+    coach: Annotated[TokenData, Depends(require_coach)] = None,
+):
+    """Update a note/task (mark complete/reopen). Coach-only."""
+    from core.models import CoachNotesTask
+    with session_scope() as s:
+        note = s.get(CoachNotesTask, note_id)
+        if not note or note.athlete_id != athlete_id:
+            raise HTTPException(status_code=404, detail="Note not found")
+        if completed is not None:
+            note.completed = completed
+        s.flush()
+        return CoachNoteOut.model_validate(note)
+
+
+@router.delete("/athletes/{athlete_id}/notes/{note_id}", response_model=MessageOut, tags=["casework"])
+def delete_athlete_note(athlete_id: int, note_id: int, coach: Annotated[TokenData, Depends(require_coach)]):
+    """Delete a note/task. Coach-only."""
+    from core.models import CoachNotesTask
+    with session_scope() as s:
+        note = s.get(CoachNotesTask, note_id)
+        if not note or note.athlete_id != athlete_id:
+            raise HTTPException(status_code=404, detail="Note not found")
+        s.delete(note)
+    return MessageOut(message="Note deleted")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────
