@@ -1,18 +1,12 @@
-"""REST API routes for Run Season Command.
-
-All endpoints are prefixed with /api/v1 and require JWT authentication
-unless otherwise noted. Coach-only endpoints require role=coach.
-"""
-
 from __future__ import annotations
 
 import logging
 from datetime import date
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.security import OAuth2PasswordRequestForm
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from api.auth import (
     TokenData,
@@ -22,12 +16,15 @@ from api.auth import (
     require_athlete,
     require_coach,
 )
+from api.rate_limit import enforce_rate_limit
+from api.realtime import manager
 from api.schemas import (
     AthleteOut,
     CheckInOut,
     EventOut,
     InterventionOut,
     MessageOut,
+    PaginatedResponse,
     PlanDaySessionOut,
     PlanOut,
     PlanWeekOut,
@@ -37,39 +34,23 @@ from api.schemas import (
     WebhookRegister,
 )
 from api.webhooks import dispatch_event, list_webhooks, register_webhook, unregister_webhook
+from core.config import get_settings
 from core.db import session_scope
-from core.models import (
-    Athlete,
-    CheckIn,
-    CoachIntervention,
-    Event,
-    Plan,
-    PlanDaySession,
-    PlanWeek,
-    TrainingLog,
-    User,
-)
+from core.models import Athlete, CheckIn, CoachIntervention, Event, Plan, PlanWeek, PlanDaySession, TrainingLog, User
 from core.security import hash_password
 from core.services.command_center import collect_athlete_signals, compose_recommendation, sync_interventions_queue
+from core.services.intervention_actions import apply_intervention_decision
 from core.services.readiness import readiness_band, readiness_score
-from core.validators import (
-    CheckInInput,
-    ClientCreateInput,
-    EventCreateInput,
-    InterventionDecisionInput,
-    TrainingLogInput,
-)
+from core.validators import CheckInInput, ClientCreateInput, EventCreateInput, InterventionDecisionInput, TrainingLogInput
 
 logger = logging.getLogger(__name__)
-
+settings = get_settings()
 router = APIRouter(prefix="/api/v1")
 
 
-# ── Auth ──────────────────────────────────────────────────────────────────
-
 @router.post("/auth/token", response_model=TokenResponse, tags=["auth"])
-def login(form_data: Annotated[OAuth2PasswordRequestForm, Depends()]):
-    """Authenticate and receive a JWT access token."""
+def login(request: Request, form_data: Annotated[OAuth2PasswordRequestForm, Depends()]):
+    enforce_rate_limit(request, key="auth_token", max_requests=5, window_seconds=60)
     with session_scope() as s:
         user = s.execute(select(User).where(User.username == form_data.username)).scalar_one_or_none()
         if not user or not __import__("core.security", fromlist=["verify_password"]).verify_password(form_data.password, user.password_hash):
@@ -80,29 +61,39 @@ def login(form_data: Annotated[OAuth2PasswordRequestForm, Depends()]):
 
 @router.get("/auth/me", response_model=TokenData, tags=["auth"])
 def me(current_user: Annotated[TokenData, Depends(get_current_user)]):
-    """Return the current authenticated user's token data."""
     return current_user
 
 
-# ── Athletes ──────────────────────────────────────────────────────────────
+@router.websocket("/ws/coach")
+async def coach_ws(websocket: WebSocket):
+    await manager.connect("coach", websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect("coach", websocket)
 
-@router.get("/athletes", response_model=list[AthleteOut], tags=["athletes"])
+
+@router.get("/athletes", response_model=PaginatedResponse[AthleteOut], tags=["athletes"])
 def list_athletes(
     coach: Annotated[TokenData, Depends(require_coach)],
     status_filter: str = Query("active", alias="status"),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(settings.default_page_size, ge=1, le=settings.max_page_size),
 ):
-    """List athletes, optionally filtered by status. Coach-only."""
     with session_scope() as s:
         q = select(Athlete)
+        c = select(func.count()).select_from(Athlete)
         if status_filter != "all":
             q = q.where(Athlete.status == status_filter)
-        rows = s.execute(q.order_by(Athlete.first_name, Athlete.last_name)).scalars().all()
-        return [AthleteOut.model_validate(r) for r in rows]
+            c = c.where(Athlete.status == status_filter)
+        rows = s.execute(q.order_by(Athlete.first_name, Athlete.last_name).offset(offset).limit(limit)).scalars().all()
+        total = s.execute(c).scalar_one()
+        return PaginatedResponse[AthleteOut](items=[AthleteOut.model_validate(r) for r in rows], total=total, offset=offset, limit=limit)
 
 
 @router.get("/athletes/{athlete_id}", response_model=AthleteOut, tags=["athletes"])
 def get_athlete(athlete_id: int, current_user: Annotated[TokenData, Depends(get_current_user)]):
-    """Get a single athlete by ID."""
     if current_user.role == "client" and current_user.athlete_id != athlete_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
     with session_scope() as s:
@@ -114,7 +105,6 @@ def get_athlete(athlete_id: int, current_user: Annotated[TokenData, Depends(get_
 
 @router.post("/athletes", response_model=AthleteOut, status_code=201, tags=["athletes"])
 async def create_athlete(body: ClientCreateInput, coach: Annotated[TokenData, Depends(require_coach)]):
-    """Create a new athlete and linked user account. Coach-only."""
     with session_scope() as s:
         existing = s.execute(select(Athlete).where(Athlete.email == body.email)).scalar_one_or_none()
         if existing:
@@ -122,25 +112,22 @@ async def create_athlete(body: ClientCreateInput, coach: Annotated[TokenData, De
         ath = Athlete(first_name=body.first_name, last_name=body.last_name, email=body.email, dob=body.dob)
         s.add(ath)
         s.flush()
-        base = f"{body.first_name}{body.last_name}".lower().replace(" ", "")
-        username = base
-        i = 1
+        base_username = f"{body.first_name.lower()}.{body.last_name.lower()}"
+        username = base_username
+        suffix = 1
         while s.execute(select(User).where(User.username == username)).scalar_one_or_none():
-            i += 1
-            username = f"{base}{i}"
-        user = User(username=username, role="client", athlete_id=ath.id, password_hash=hash_password("TempPass!234"), must_change_password=True)
+            suffix += 1
+            username = f"{base_username}{suffix}"
+        user = User(username=username, password_hash=hash_password(body.temp_password), role="client", athlete_id=ath.id)
         s.add(user)
         s.flush()
         result = AthleteOut.model_validate(ath)
-    await dispatch_event("athlete.created", {"athlete_id": result.id, "email": body.email})
+    await dispatch_event("athlete.created", {"athlete_id": result.id, "email": result.email})
     return result
 
 
-# ── Check-ins ─────────────────────────────────────────────────────────────
-
 @router.post("/checkins", response_model=CheckInOut, status_code=201, tags=["checkins"])
 async def create_checkin(body: CheckInInput, athlete: Annotated[TokenData, Depends(require_athlete)]):
-    """Submit a daily check-in. Athlete-only. Upserts for today."""
     today = date.today()
     with session_scope() as s:
         existing = s.execute(select(CheckIn).where(CheckIn.athlete_id == athlete.athlete_id, CheckIn.day == today)).scalar_one_or_none()
@@ -160,37 +147,30 @@ async def create_checkin(body: CheckInInput, athlete: Annotated[TokenData, Depen
         result = CheckInOut.model_validate(obj)
         result.readiness_score = score
         result.readiness_band = readiness_band(score)
-    await dispatch_event("checkin.created", {"athlete_id": athlete.athlete_id, "day": str(today), "readiness": score})
+    payload = {"athlete_id": athlete.athlete_id, "day": str(today), "readiness": score}
+    await dispatch_event("checkin.created", payload)
+    await manager.broadcast("coach", "checkin.created", payload)
     return result
 
 
-@router.get("/checkins", response_model=list[CheckInOut], tags=["checkins"])
-def list_checkins(
-    current_user: Annotated[TokenData, Depends(get_current_user)],
-    athlete_id: int | None = None,
-    limit: int = Query(30, le=200),
-):
-    """List check-ins. Athletes see their own; coaches can query by athlete_id."""
+@router.get("/checkins", response_model=PaginatedResponse[CheckInOut], tags=["checkins"])
+def list_checkins(current_user: Annotated[TokenData, Depends(get_current_user)], athlete_id: int | None = None, offset: int = Query(0, ge=0), limit: int = Query(settings.default_page_size, ge=1, le=settings.max_page_size)):
     target_id = _resolve_athlete_id(current_user, athlete_id)
     with session_scope() as s:
-        rows = s.execute(
-            select(CheckIn).where(CheckIn.athlete_id == target_id).order_by(CheckIn.day.desc()).limit(limit)
-        ).scalars().all()
-        results = []
+        rows = s.execute(select(CheckIn).where(CheckIn.athlete_id == target_id).order_by(CheckIn.day.desc()).offset(offset).limit(limit)).scalars().all()
+        total = s.execute(select(func.count()).select_from(CheckIn).where(CheckIn.athlete_id == target_id)).scalar_one()
+        items: list[CheckInOut] = []
         for r in rows:
             out = CheckInOut.model_validate(r)
             score = readiness_score(r.sleep, r.energy, r.recovery, r.stress)
             out.readiness_score = score
             out.readiness_band = readiness_band(score)
-            results.append(out)
-        return results
+            items.append(out)
+        return PaginatedResponse[CheckInOut](items=items, total=total, offset=offset, limit=limit)
 
-
-# ── Training Logs ─────────────────────────────────────────────────────────
 
 @router.post("/training-logs", response_model=TrainingLogOut, status_code=201, tags=["training-logs"])
 async def create_training_log(body: TrainingLogInput, athlete: Annotated[TokenData, Depends(require_athlete)]):
-    """Log a training session. Athlete-only. Upserts for today."""
     today = date.today()
     load = float(body.duration_min) * (body.rpe / 10)
     with session_scope() as s:
@@ -209,39 +189,27 @@ async def create_training_log(body: TrainingLogInput, athlete: Annotated[TokenDa
             s.flush()
             obj = existing
         else:
-            obj = TrainingLog(
-                athlete_id=athlete.athlete_id, date=today, session_category=body.session_category,
-                duration_min=body.duration_min, distance_km=body.distance_km, avg_hr=body.avg_hr,
-                max_hr=body.max_hr, avg_pace_sec_per_km=body.avg_pace_sec_per_km, rpe=body.rpe,
-                load_score=load, notes=body.notes, pain_flag=body.pain_flag,
-            )
+            obj = TrainingLog(athlete_id=athlete.athlete_id, date=today, session_category=body.session_category, duration_min=body.duration_min, distance_km=body.distance_km, avg_hr=body.avg_hr, max_hr=body.max_hr, avg_pace_sec_per_km=body.avg_pace_sec_per_km, rpe=body.rpe, load_score=load, notes=body.notes, pain_flag=body.pain_flag)
             s.add(obj)
             s.flush()
         result = TrainingLogOut.model_validate(obj)
-    await dispatch_event("training_log.created", {"athlete_id": athlete.athlete_id, "date": str(today), "rpe": body.rpe, "pain": body.pain_flag})
+    payload = {"athlete_id": athlete.athlete_id, "date": str(today), "rpe": body.rpe, "pain": body.pain_flag}
+    await dispatch_event("training_log.created", payload)
+    await manager.broadcast("coach", "training_log.created", payload)
     return result
 
 
-@router.get("/training-logs", response_model=list[TrainingLogOut], tags=["training-logs"])
-def list_training_logs(
-    current_user: Annotated[TokenData, Depends(get_current_user)],
-    athlete_id: int | None = None,
-    limit: int = Query(30, le=200),
-):
-    """List training logs. Athletes see their own; coaches can query by athlete_id."""
+@router.get("/training-logs", response_model=PaginatedResponse[TrainingLogOut], tags=["training-logs"])
+def list_training_logs(current_user: Annotated[TokenData, Depends(get_current_user)], athlete_id: int | None = None, offset: int = Query(0, ge=0), limit: int = Query(settings.default_page_size, ge=1, le=settings.max_page_size)):
     target_id = _resolve_athlete_id(current_user, athlete_id)
     with session_scope() as s:
-        rows = s.execute(
-            select(TrainingLog).where(TrainingLog.athlete_id == target_id).order_by(TrainingLog.date.desc()).limit(limit)
-        ).scalars().all()
-        return [TrainingLogOut.model_validate(r) for r in rows]
+        rows = s.execute(select(TrainingLog).where(TrainingLog.athlete_id == target_id).order_by(TrainingLog.date.desc()).offset(offset).limit(limit)).scalars().all()
+        total = s.execute(select(func.count()).select_from(TrainingLog).where(TrainingLog.athlete_id == target_id)).scalar_one()
+        return PaginatedResponse[TrainingLogOut](items=[TrainingLogOut.model_validate(r) for r in rows], total=total, offset=offset, limit=limit)
 
-
-# ── Events ────────────────────────────────────────────────────────────────
 
 @router.post("/events", response_model=EventOut, status_code=201, tags=["events"])
 def create_event(body: EventCreateInput, athlete: Annotated[TokenData, Depends(require_athlete)]):
-    """Create a race event. Athlete-only."""
     with session_scope() as s:
         obj = Event(athlete_id=athlete.athlete_id, name=body.name, event_date=body.event_date, distance=body.distance)
         s.add(obj)
@@ -250,28 +218,15 @@ def create_event(body: EventCreateInput, athlete: Annotated[TokenData, Depends(r
 
 
 @router.get("/events", response_model=list[EventOut], tags=["events"])
-def list_events(
-    current_user: Annotated[TokenData, Depends(get_current_user)],
-    athlete_id: int | None = None,
-):
-    """List events. Athletes see their own; coaches can query by athlete_id."""
+def list_events(current_user: Annotated[TokenData, Depends(get_current_user)], athlete_id: int | None = None):
     target_id = _resolve_athlete_id(current_user, athlete_id)
     with session_scope() as s:
-        rows = s.execute(
-            select(Event).where(Event.athlete_id == target_id).order_by(Event.event_date.asc())
-        ).scalars().all()
+        rows = s.execute(select(Event).where(Event.athlete_id == target_id).order_by(Event.event_date.asc())).scalars().all()
         return [EventOut.model_validate(r) for r in rows]
 
 
-# ── Plans ─────────────────────────────────────────────────────────────────
-
 @router.get("/plans", response_model=list[PlanOut], tags=["plans"])
-def list_plans(
-    current_user: Annotated[TokenData, Depends(get_current_user)],
-    athlete_id: int | None = None,
-    status_filter: str = Query("active", alias="status"),
-):
-    """List training plans. Athletes see their own; coaches see all."""
+def list_plans(current_user: Annotated[TokenData, Depends(get_current_user)], athlete_id: int | None = None, status_filter: str = Query("active", alias="status")):
     with session_scope() as s:
         q = select(Plan)
         if current_user.role == "client":
@@ -286,7 +241,6 @@ def list_plans(
 
 @router.get("/plans/{plan_id}/weeks", response_model=list[PlanWeekOut], tags=["plans"])
 def get_plan_weeks(plan_id: int, current_user: Annotated[TokenData, Depends(get_current_user)]):
-    """Get all weeks for a plan."""
     with session_scope() as s:
         plan = s.get(Plan, plan_id)
         if not plan:
@@ -299,7 +253,6 @@ def get_plan_weeks(plan_id: int, current_user: Annotated[TokenData, Depends(get_
 
 @router.get("/plans/{plan_id}/sessions", response_model=list[PlanDaySessionOut], tags=["plans"])
 def get_plan_sessions(plan_id: int, current_user: Annotated[TokenData, Depends(get_current_user)]):
-    """Get all day sessions for a plan."""
     with session_scope() as s:
         plan = s.get(Plan, plan_id)
         if not plan:
@@ -309,21 +262,12 @@ def get_plan_sessions(plan_id: int, current_user: Annotated[TokenData, Depends(g
         week_ids = [w.id for w in s.execute(select(PlanWeek).where(PlanWeek.plan_id == plan_id)).scalars().all()]
         if not week_ids:
             return []
-        rows = s.execute(
-            select(PlanDaySession).where(PlanDaySession.plan_week_id.in_(week_ids)).order_by(PlanDaySession.session_day)
-        ).scalars().all()
+        rows = s.execute(select(PlanDaySession).where(PlanDaySession.plan_week_id.in_(week_ids)).order_by(PlanDaySession.session_day)).scalars().all()
         return [PlanDaySessionOut.model_validate(r) for r in rows]
 
 
-# ── Interventions ─────────────────────────────────────────────────────────
-
 @router.get("/interventions", response_model=list[InterventionOut], tags=["interventions"])
-def list_interventions(
-    coach: Annotated[TokenData, Depends(require_coach)],
-    status_filter: str = Query("open", alias="status"),
-    athlete_id: int | None = None,
-):
-    """List interventions. Coach-only."""
+def list_interventions(coach: Annotated[TokenData, Depends(require_coach)], status_filter: str = Query("open", alias="status"), athlete_id: int | None = None):
     with session_scope() as s:
         q = select(CoachIntervention)
         if status_filter != "all":
@@ -336,48 +280,35 @@ def list_interventions(
 
 @router.post("/interventions/sync", response_model=MessageOut, tags=["interventions"])
 def sync_interventions(coach: Annotated[TokenData, Depends(require_coach)]):
-    """Refresh the intervention queue across all athletes. Coach-only."""
     result = sync_interventions_queue()
     return MessageOut(message=f"Sync complete: +{result['created']} created, {result['updated']} updated, {result['closed']} closed")
 
 
 @router.post("/interventions/{intervention_id}/decide", response_model=MessageOut, tags=["interventions"])
 def decide_intervention(intervention_id: int, body: InterventionDecisionInput, coach: Annotated[TokenData, Depends(require_coach)]):
-    """Apply a decision to an intervention. Coach-only."""
     with session_scope() as s:
         rec = s.get(CoachIntervention, intervention_id)
         if not rec:
             raise HTTPException(status_code=404, detail="Intervention not found")
         if rec.status != "open":
             raise HTTPException(status_code=400, detail="Intervention is not open")
-        from pages.coach import _apply_intervention_decision
-        _apply_intervention_decision(s, rec, body.decision, body.note, body.modified_action, coach.user_id)
+        apply_intervention_decision(s, rec, body.decision, body.note, body.modified_action, coach.user_id)
     return MessageOut(message=f"Intervention {intervention_id}: {body.decision} applied")
 
 
-# ── Recommendations ───────────────────────────────────────────────────────
-
 @router.get("/athletes/{athlete_id}/recommendation", response_model=RecommendationOut, tags=["recommendations"])
 def get_recommendation(athlete_id: int, coach: Annotated[TokenData, Depends(require_coach)]):
-    """Generate a live recommendation for an athlete. Coach-only."""
     with session_scope() as s:
         athlete = s.get(Athlete, athlete_id)
         if not athlete:
             raise HTTPException(status_code=404, detail="Athlete not found")
         signals = collect_athlete_signals(s, athlete_id, date.today())
         rec = compose_recommendation(signals)
-        return RecommendationOut(
-            action=rec.action, risk_score=rec.risk_score, confidence_score=rec.confidence_score,
-            expected_impact=rec.expected_impact, why=rec.why,
-            guardrail_pass=rec.guardrail_pass, guardrail_reason=rec.guardrail_reason,
-        )
+        return RecommendationOut(action=rec.action, risk_score=rec.risk_score, confidence_score=rec.confidence_score, expected_impact=rec.expected_impact, why=rec.why, guardrail_pass=rec.guardrail_pass, guardrail_reason=rec.guardrail_reason)
 
-
-# ── Webhooks ──────────────────────────────────────────────────────────────
 
 @router.post("/webhooks", response_model=WebhookOut, status_code=201, tags=["webhooks"])
 def create_webhook(body: WebhookRegister, coach: Annotated[TokenData, Depends(require_coach)]):
-    """Register a webhook endpoint. Coach-only."""
     try:
         hook = register_webhook(body.url, body.events, body.secret)
     except ValueError as e:
@@ -387,22 +318,17 @@ def create_webhook(body: WebhookRegister, coach: Annotated[TokenData, Depends(re
 
 @router.get("/webhooks", response_model=list[WebhookOut], tags=["webhooks"])
 def get_webhooks(coach: Annotated[TokenData, Depends(require_coach)]):
-    """List all registered webhooks. Coach-only."""
     return [WebhookOut(id=h["id"], url=h["url"], events=h["events"], active=h["active"]) for h in list_webhooks()]
 
 
 @router.delete("/webhooks/{hook_id}", response_model=MessageOut, tags=["webhooks"])
 def delete_webhook(hook_id: str, coach: Annotated[TokenData, Depends(require_coach)]):
-    """Delete a webhook. Coach-only."""
     if not unregister_webhook(hook_id):
         raise HTTPException(status_code=404, detail="Webhook not found")
     return MessageOut(message="Webhook deleted")
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────
-
 def _resolve_athlete_id(current_user: TokenData, requested_id: int | None) -> int:
-    """Resolve the target athlete ID based on role and request."""
     if current_user.role == "client":
         return current_user.athlete_id
     if requested_id:
