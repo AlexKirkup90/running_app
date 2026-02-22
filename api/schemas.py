@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any, Optional
+from typing import Any, Generic, Optional, TypeVar
 
 from pydantic import BaseModel, Field
 
@@ -167,8 +167,11 @@ class MessageOut(BaseModel):
     message: str
 
 
-class PaginatedResponse(BaseModel):
-    items: list[Any]
+T = TypeVar("T")
+
+
+class PaginatedResponse(BaseModel, Generic[T]):
+    items: list[T]
     total: int
-    page: int
-    page_size: int
+    offset: int
+    limit: int
