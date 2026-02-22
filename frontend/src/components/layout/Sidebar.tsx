@@ -15,6 +15,7 @@ import {
   HeartHandshake,
   Hammer,
   BookOpen,
+  UserCircle,
 } from "lucide-react";
 import { useAuthStore } from "@/stores/auth";
 import { cn } from "@/lib/utils";
@@ -39,6 +40,7 @@ const athleteLinks = [
   { to: "/athlete/events", icon: CalendarDays, label: "Events" },
   { to: "/athlete/analytics", icon: TrendingUp, label: "Analytics" },
   { to: "/athlete/community", icon: HeartHandshake, label: "Community" },
+  { to: "/athlete/profile", icon: UserCircle, label: "Profile" },
 ];
 
 export function Sidebar() {

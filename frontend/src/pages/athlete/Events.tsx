@@ -1,10 +1,11 @@
 import { useState } from "react";
 import { useAuthStore } from "@/stores/auth";
 import { useEvents, useCreateEvent } from "@/hooks/usePlans";
+import { useRacePredictions } from "@/hooks/useAthleteIntelligence";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { CalendarDays, Plus, Trophy } from "lucide-react";
+import { CalendarDays, Clock, Plus, Timer, Trophy, Zap } from "lucide-react";
 
 const DISTANCES = ["5K", "10K", "Half Marathon", "Marathon", "Other"] as const;
 
@@ -18,6 +19,7 @@ function daysUntil(dateStr: string) {
 export function AthleteEvents() {
   const { athleteId } = useAuthStore();
   const { data: events, isLoading } = useEvents(athleteId ?? undefined);
+  const { data: predictions, isLoading: predictionsLoading } = useRacePredictions(athleteId ?? 0);
   const createEvent = useCreateEvent();
 
   const [showForm, setShowForm] = useState(false);
@@ -67,6 +69,8 @@ export function AthleteEvents() {
 
   const upcoming = events?.filter((e) => daysUntil(e.event_date) >= 0) ?? [];
   const past = events?.filter((e) => daysUntil(e.event_date) < 0) ?? [];
+
+  const predictionEntries = predictions?.predictions ? Object.entries(predictions.predictions) : [];
 
   return (
     <div className="space-y-6">
@@ -135,6 +139,69 @@ export function AthleteEvents() {
                 </Button>
               </div>
             </form>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Race Predictions */}
+      {!predictionsLoading && predictionEntries.length > 0 && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Timer className="h-5 w-5 text-blue-500" />
+                Race Predictions
+              </CardTitle>
+              {predictions?.source_event && (
+                <span className="text-sm text-muted-foreground">
+                  Based on: {predictions.source_event}
+                  {predictions.source_vdot && ` (VDOT ${predictions.source_vdot})`}
+                </span>
+              )}
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="overflow-auto rounded-lg border">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b bg-muted/50">
+                    <th className="p-3 text-left font-medium">Distance</th>
+                    <th className="p-3 text-left font-medium">VDOT</th>
+                    <th className="p-3 text-left font-medium">Riegel</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {predictionEntries.map(([label, preds]) => {
+                    const vdotPred = preds.find((p) => p.method === "vdot");
+                    const riegelPred = preds.find((p) => p.method === "riegel");
+                    return (
+                      <tr key={label} className="border-b last:border-0">
+                        <td className="p-3 font-medium">{label}</td>
+                        <td className="p-3">
+                          {vdotPred ? (
+                            <div className="flex items-center gap-2">
+                              <Clock className="h-3.5 w-3.5 text-muted-foreground" />
+                              <span>{vdotPred.predicted_display}</span>
+                            </div>
+                          ) : "—"}
+                        </td>
+                        <td className="p-3">
+                          {riegelPred ? (
+                            <div className="flex items-center gap-2">
+                              <Clock className="h-3.5 w-3.5 text-muted-foreground" />
+                              <span>{riegelPred.predicted_display}</span>
+                            </div>
+                          ) : "—"}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <p className="mt-2 text-xs text-muted-foreground">
+              VDOT uses the Daniels physiology model. Riegel uses power-law extrapolation.
+            </p>
           </CardContent>
         </Card>
       )}

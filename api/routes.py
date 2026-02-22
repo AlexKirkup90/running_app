@@ -25,6 +25,7 @@ from api.auth import (
 from api.schemas import (
     AssignAthleteInput,
     AthleteOut,
+    AthleteProfileOut,
     BatchDecisionInput,
     ChallengeCreateInput,
     ChallengeEntryOut,
@@ -37,6 +38,7 @@ from api.schemas import (
     CoachNoteOut,
     CreateOrgInput,
     EventOut,
+    FitnessFatigueOut,
     GroupMemberOut,
     GroupMessageCreateInput,
     GroupMessageOut,
@@ -52,14 +54,18 @@ from api.schemas import (
     PlanPreviewOut,
     PlanPreviewWeek,
     PlanWeekOut,
+    RacePredictionOut,
     RecommendationOut,
+    SessionBriefingOut,
     SessionLibraryCreateInput,
     SessionLibraryOut,
     TimelineEntry,
     TrainingGroupCreateInput,
     TrainingGroupOut,
+    TrainingLoadSummaryOut,
     TrainingLogOut,
     TransferAthleteInput,
+    VdotHistoryOut,
     WebhookOut,
     WebhookRegister,
 )
@@ -1699,6 +1705,323 @@ def delete_athlete_note(athlete_id: int, note_id: int, coach: Annotated[TokenDat
             raise HTTPException(status_code=404, detail="Note not found")
         s.delete(note)
     return MessageOut(message="Note deleted")
+
+
+# ── Phase 2: Athlete Intelligence ─────────────────────────────────────────
+
+@router.get("/athletes/{athlete_id}/session-briefing", response_model=SessionBriefingOut, tags=["athlete-intelligence"])
+def get_session_briefing(athlete_id: int, current_user: Annotated[TokenData, Depends(get_current_user)]):
+    """Get today's adapted session briefing for an athlete."""
+    if current_user.role == "client" and current_user.athlete_id != athlete_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    from core.models import SessionLibrary
+    from core.services.session_engine import adapt_session_structure, compute_acute_chronic_ratio, pace_from_sec_per_km
+    today = date.today()
+    with session_scope() as s:
+        athlete = s.get(Athlete, athlete_id)
+        if not athlete:
+            raise HTTPException(status_code=404, detail="Athlete not found")
+
+        result = SessionBriefingOut(
+            max_hr=athlete.max_hr,
+            resting_hr=athlete.resting_hr,
+            threshold_pace=pace_from_sec_per_km(athlete.threshold_pace_sec_per_km) if athlete.threshold_pace_sec_per_km else None,
+            easy_pace=pace_from_sec_per_km(athlete.easy_pace_sec_per_km) if athlete.easy_pace_sec_per_km else None,
+            vdot=getattr(athlete, "vdot_score", None),
+        )
+
+        # Today's check-in
+        ci = s.execute(select(CheckIn).where(CheckIn.athlete_id == athlete_id, CheckIn.day == today)).scalar_one_or_none()
+        if ci:
+            score = readiness_score(ci.sleep, ci.energy, ci.recovery, ci.stress)
+            result.has_checkin = True
+            result.readiness_score = score
+            result.readiness_band = readiness_band(score)
+
+        # Today's log
+        today_log = s.execute(select(TrainingLog).where(TrainingLog.athlete_id == athlete_id, TrainingLog.date == today)).scalar_one_or_none()
+        result.today_logged = today_log is not None
+
+        # A:C ratio from 28 days of loads
+        cutoff_28 = today - timedelta(days=28)
+        recent_logs = s.execute(
+            select(TrainingLog).where(TrainingLog.athlete_id == athlete_id, TrainingLog.date >= cutoff_28).order_by(TrainingLog.date)
+        ).scalars().all()
+        daily_loads = [float(l.load_score) for l in recent_logs]
+        ac_ratio = compute_acute_chronic_ratio(daily_loads)
+        result.acute_chronic_ratio = ac_ratio
+
+        # Pain flag (last 3 days)
+        cutoff_3 = today - timedelta(days=3)
+        pain_recent = any(l.pain_flag for l in recent_logs if l.date >= cutoff_3)
+
+        # Active plan → today's session
+        active_plan = s.execute(select(Plan).where(Plan.athlete_id == athlete_id, Plan.status == "active").order_by(Plan.id.desc())).scalar_one_or_none()
+        phase = None
+        days_to_event = None
+
+        if active_plan:
+            pw = s.execute(
+                select(PlanWeek).where(PlanWeek.plan_id == active_plan.id, PlanWeek.week_start <= today, PlanWeek.week_end >= today)
+            ).scalar_one_or_none()
+            if pw:
+                phase = pw.phase
+                result.phase = phase
+
+            pds = s.execute(
+                select(PlanDaySession).where(PlanDaySession.athlete_id == athlete_id, PlanDaySession.session_day == today)
+            ).scalar_one_or_none()
+            if pds:
+                result.planned_session_name = pds.session_name
+                result.planned_session_status = pds.status
+
+                # Find template
+                tmpl = s.execute(select(SessionLibrary).where(SessionLibrary.name == pds.source_template_name)).scalar_one_or_none()
+                if tmpl:
+                    result.has_template = True
+                    result.prescription = tmpl.prescription
+                    result.coaching_notes = tmpl.coaching_notes
+                    result.progression_rules = tmpl.progression_json if tmpl.progression_json else None
+                    result.regression_rules = tmpl.regression_json if tmpl.regression_json else None
+
+                    # Next event for taper calc
+                    next_event = s.execute(
+                        select(Event).where(Event.athlete_id == athlete_id, Event.event_date >= today).order_by(Event.event_date)
+                    ).scalar_one_or_none()
+                    if next_event:
+                        days_to_event = (next_event.event_date - today).days
+
+                    # Adapt session
+                    adapted = adapt_session_structure(
+                        tmpl.structure_json,
+                        readiness=result.readiness_score,
+                        pain_flag=pain_recent,
+                        acute_chronic_ratio=ac_ratio,
+                        days_to_event=days_to_event,
+                        phase=phase,
+                        vdot=result.vdot,
+                    )
+                    result.adaptation_action = adapted["action"]
+                    result.adaptation_reason = adapted["reason"]
+                    result.adapted_blocks = adapted["session"].get("blocks", [])
+
+        return result
+
+
+@router.get("/athletes/{athlete_id}/training-load-summary", response_model=TrainingLoadSummaryOut, tags=["athlete-intelligence"])
+def get_training_load_summary(athlete_id: int, current_user: Annotated[TokenData, Depends(get_current_user)]):
+    """Get 30-day training load metrics (monotony, strain, risk)."""
+    if current_user.role == "client" and current_user.athlete_id != athlete_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    from core.services.training_load import compute_weekly_metrics, overtraining_risk
+    today = date.today()
+    cutoff = today - timedelta(days=30)
+    with session_scope() as s:
+        logs = s.execute(
+            select(TrainingLog).where(TrainingLog.athlete_id == athlete_id, TrainingLog.date >= cutoff).order_by(TrainingLog.date)
+        ).scalars().all()
+
+        if len(logs) < 7:
+            return TrainingLoadSummaryOut()
+
+        # Build daily loads for the last 7 days
+        last_7_start = today - timedelta(days=6)
+        daily = {last_7_start + timedelta(days=i): 0.0 for i in range(7)}
+        total_load = 0.0
+        for log in logs:
+            total_load += log.load_score
+            if log.date in daily:
+                daily[log.date] += float(log.load_score)
+
+        daily_loads_7 = [daily[last_7_start + timedelta(days=i)] for i in range(7)]
+        metrics = compute_weekly_metrics(daily_loads_7)
+        risk = overtraining_risk(metrics.monotony, metrics.strain)
+
+        return TrainingLoadSummaryOut(
+            has_data=True,
+            monotony=metrics.monotony,
+            strain=metrics.strain,
+            risk_level=risk,
+            total_load=round(total_load, 1),
+            session_count=len(logs),
+            avg_daily_load=metrics.avg_daily_load,
+        )
+
+
+@router.get("/athletes/{athlete_id}/analytics/fitness", response_model=FitnessFatigueOut, tags=["athlete-intelligence"])
+def get_fitness_fatigue(athlete_id: int, current_user: Annotated[TokenData, Depends(get_current_user)]):
+    """Get CTL/ATL/TSB time series for fitness & fatigue chart."""
+    if current_user.role == "client" and current_user.athlete_id != athlete_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    from core.services.analytics import compute_fitness_fatigue, race_readiness_score
+    cutoff = date.today() - timedelta(days=120)
+    with session_scope() as s:
+        logs = s.execute(
+            select(TrainingLog).where(TrainingLog.athlete_id == athlete_id, TrainingLog.date >= cutoff).order_by(TrainingLog.date)
+        ).scalars().all()
+
+        if not logs:
+            return FitnessFatigueOut()
+
+        daily_loads = [{"date": l.date, "load": float(l.load_score)} for l in logs]
+        points = compute_fitness_fatigue(daily_loads)
+
+        if not points:
+            return FitnessFatigueOut()
+
+        last = points[-1]
+        readiness = race_readiness_score(last.tsb)
+
+        return FitnessFatigueOut(
+            points=[{"day": str(p.day), "ctl": p.ctl, "atl": p.atl, "tsb": p.tsb, "load": p.daily_load} for p in points],
+            current_ctl=last.ctl,
+            current_atl=last.atl,
+            current_tsb=last.tsb,
+            readiness=readiness,
+        )
+
+
+@router.get("/athletes/{athlete_id}/analytics/vdot", response_model=VdotHistoryOut, tags=["athlete-intelligence"])
+def get_vdot_history(athlete_id: int, current_user: Annotated[TokenData, Depends(get_current_user)]):
+    """Get VDOT progression from race/benchmark logs."""
+    if current_user.role == "client" and current_user.athlete_id != athlete_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    from core.services.analytics import compute_vdot_history, vdot_trend
+    with session_scope() as s:
+        # Get race/benchmark logs (session_category in race, benchmark, time_trial)
+        logs = s.execute(
+            select(TrainingLog).where(
+                TrainingLog.athlete_id == athlete_id,
+                TrainingLog.session_category.in_(["race", "benchmark", "time_trial"]),
+                TrainingLog.distance_km > 0,
+                TrainingLog.duration_min > 0,
+            ).order_by(TrainingLog.date)
+        ).scalars().all()
+
+        if not logs:
+            return VdotHistoryOut()
+
+        race_results = [
+            {"date": l.date, "distance_km": float(l.distance_km), "duration_min": float(l.duration_min), "source": l.session_category}
+            for l in logs
+        ]
+        history = compute_vdot_history(race_results)
+
+        if not history:
+            return VdotHistoryOut()
+
+        trend = vdot_trend(history)
+        return VdotHistoryOut(
+            points=[{"date": str(p.event_date), "vdot": p.vdot, "source": p.source, "distance_m": p.distance_m} for p in history],
+            current_vdot=trend.get("current_vdot"),
+            peak_vdot=trend.get("peak_vdot"),
+            trend=trend.get("trend", "insufficient_data"),
+            improvement_per_month=trend.get("improvement_per_month", 0.0),
+        )
+
+
+@router.get("/athletes/{athlete_id}/race-predictions", response_model=RacePredictionOut, tags=["athlete-intelligence"])
+def get_race_predictions(athlete_id: int, current_user: Annotated[TokenData, Depends(get_current_user)]):
+    """Get race time predictions for all standard distances."""
+    if current_user.role == "client" and current_user.athlete_id != athlete_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    from core.services.race_predictor import predict_all_distances
+    with session_scope() as s:
+        athlete = s.get(Athlete, athlete_id)
+        if not athlete:
+            raise HTTPException(status_code=404, detail="Athlete not found")
+
+        # Find best recent race/benchmark
+        best_log = s.execute(
+            select(TrainingLog).where(
+                TrainingLog.athlete_id == athlete_id,
+                TrainingLog.session_category.in_(["race", "benchmark", "time_trial"]),
+                TrainingLog.distance_km > 0,
+                TrainingLog.duration_min > 0,
+            ).order_by(TrainingLog.date.desc())
+        ).scalars().first()
+
+        vdot_score = getattr(athlete, "vdot_score", None)
+
+        if not best_log and not vdot_score:
+            return RacePredictionOut()
+
+        # Determine source
+        if best_log:
+            dist_km = float(best_log.distance_km)
+            # Map to standard distance label
+            dist_map = {5.0: "5K", 10.0: "10K", 21.1: "Half Marathon", 42.2: "Marathon"}
+            dist_label = None
+            for km, label in dist_map.items():
+                if abs(dist_km - km) < 0.5:
+                    dist_label = label
+                    break
+            if not dist_label:
+                dist_label = "5K"  # fallback
+
+            time_seconds = float(best_log.duration_min) * 60
+            predictions_raw = predict_all_distances(dist_label, time_seconds, vdot_override=vdot_score)
+            source_event = f"{dist_label} ({best_log.date})"
+        else:
+            predictions_raw = predict_all_distances("5K", 0, vdot_override=vdot_score)
+            source_event = f"VDOT {vdot_score}"
+
+        predictions = {}
+        for label, preds in predictions_raw.items():
+            predictions[label] = [
+                {"distance_label": p.distance_label, "predicted_display": p.predicted_display, "method": p.method, "vdot_used": p.vdot_used}
+                for p in preds
+            ]
+
+        return RacePredictionOut(
+            predictions=predictions,
+            source_vdot=vdot_score,
+            source_event=source_event,
+        )
+
+
+@router.get("/athletes/{athlete_id}/profile", response_model=AthleteProfileOut, tags=["athlete-intelligence"])
+def get_athlete_profile(athlete_id: int, current_user: Annotated[TokenData, Depends(get_current_user)]):
+    """Get athlete profile with wearable connections and sync logs."""
+    if current_user.role == "client" and current_user.athlete_id != athlete_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    from core.models import SyncLog, WearableConnection
+    with session_scope() as s:
+        athlete = s.get(Athlete, athlete_id)
+        if not athlete:
+            raise HTTPException(status_code=404, detail="Athlete not found")
+
+        connections = s.execute(
+            select(WearableConnection).where(WearableConnection.athlete_id == athlete_id)
+        ).scalars().all()
+        wearables = [
+            {"id": c.id, "service": c.service, "sync_status": c.sync_status,
+             "last_sync_at": str(c.last_sync_at) if c.last_sync_at else None,
+             "external_athlete_id": c.external_athlete_id}
+            for c in connections
+        ]
+
+        sync_logs = s.execute(
+            select(SyncLog).where(SyncLog.athlete_id == athlete_id).order_by(SyncLog.id.desc()).limit(5)
+        ).scalars().all()
+        logs = [
+            {"id": sl.id, "service": sl.service, "status": sl.status,
+             "activities_found": sl.activities_found, "activities_imported": sl.activities_imported,
+             "started_at": str(sl.started_at) if sl.started_at else None}
+            for sl in sync_logs
+        ]
+
+        return AthleteProfileOut(
+            id=athlete.id, first_name=athlete.first_name, last_name=athlete.last_name,
+            email=athlete.email, dob=athlete.dob, max_hr=athlete.max_hr,
+            resting_hr=athlete.resting_hr,
+            threshold_pace_sec_per_km=athlete.threshold_pace_sec_per_km,
+            easy_pace_sec_per_km=athlete.easy_pace_sec_per_km,
+            vdot_score=getattr(athlete, "vdot_score", None),
+            status=athlete.status,
+            wearable_connections=wearables,
+            sync_logs=logs,
+        )
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────

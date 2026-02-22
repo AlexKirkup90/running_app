@@ -21,6 +21,7 @@ import { AthletePlans } from "@/pages/athlete/Plans";
 import { AthleteEvents } from "@/pages/athlete/Events";
 import { AthleteAnalytics } from "@/pages/athlete/Analytics";
 import { AthleteCommunity } from "@/pages/athlete/Community";
+import { AthleteProfile } from "@/pages/athlete/Profile";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -76,6 +77,7 @@ function AppRoutes() {
         <Route path="/athlete/events" element={<AthleteEvents />} />
         <Route path="/athlete/analytics" element={<AthleteAnalytics />} />
         <Route path="/athlete/community" element={<AthleteCommunity />} />
+        <Route path="/athlete/profile" element={<AthleteProfile />} />
       </Route>
 
       {/* Root redirect */}

@@ -584,4 +584,30 @@ export function deleteAthleteNote(
   });
 }
 
+// --- Phase 2: Athlete Intelligence ---
+
+export function fetchSessionBriefing(athleteId: number): Promise<import("./types").SessionBriefing> {
+  return request(`/athletes/${athleteId}/session-briefing`);
+}
+
+export function fetchTrainingLoadSummary(athleteId: number): Promise<import("./types").TrainingLoadSummary> {
+  return request(`/athletes/${athleteId}/training-load-summary`);
+}
+
+export function fetchFitnessFatigue(athleteId: number): Promise<import("./types").FitnessFatigue> {
+  return request(`/athletes/${athleteId}/analytics/fitness`);
+}
+
+export function fetchVdotHistory(athleteId: number): Promise<import("./types").VdotHistory> {
+  return request(`/athletes/${athleteId}/analytics/vdot`);
+}
+
+export function fetchRacePredictions(athleteId: number): Promise<import("./types").RacePredictions> {
+  return request(`/athletes/${athleteId}/race-predictions`);
+}
+
+export function fetchAthleteProfile(athleteId: number): Promise<import("./types").AthleteProfile> {
+  return request(`/athletes/${athleteId}/profile`);
+}
+
 export { ApiError };

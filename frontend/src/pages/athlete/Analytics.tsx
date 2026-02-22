@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { useAuthStore } from "@/stores/auth";
 import { useCheckins, useTrainingLogs } from "@/hooks/useAthlete";
+import { useFitnessFatigue, useVdotHistory } from "@/hooks/useAthleteIntelligence";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -17,8 +18,10 @@ import {
   LineChart,
   Line,
   Legend,
+  Area,
+  ComposedChart,
 } from "recharts";
-import { Activity, Clock, Flame, TrendingUp } from "lucide-react";
+import { Activity, Clock, Flame, Heart, TrendingUp, Zap } from "lucide-react";
 
 const COLORS = ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899"];
 
@@ -27,6 +30,26 @@ function formatPace(secPerKm: number | null) {
   const min = Math.floor(secPerKm / 60);
   const sec = Math.round(secPerKm % 60);
   return `${min}:${sec.toString().padStart(2, "0")}`;
+}
+
+function readinessLabel(r: string) {
+  const map: Record<string, string> = {
+    race_ready: "Race Ready",
+    fresh: "Fresh",
+    slightly_fatigued: "Slightly Fatigued",
+    fatigued: "Fatigued",
+    overreached: "Overreached",
+    detrained: "Detrained",
+    insufficient_data: "Insufficient Data",
+  };
+  return map[r] ?? r;
+}
+
+function readinessVariant(r: string) {
+  if (r === "race_ready" || r === "fresh") return "success" as const;
+  if (r === "slightly_fatigued" || r === "detrained") return "warning" as const;
+  if (r === "fatigued" || r === "overreached") return "danger" as const;
+  return "secondary" as const;
 }
 
 export function AthleteAnalytics() {
@@ -39,6 +62,8 @@ export function AthleteAnalytics() {
     athleteId ?? 0,
     30,
   );
+  const { data: fitness, isLoading: fitnessLoading } = useFitnessFatigue(athleteId ?? 0);
+  const { data: vdotData, isLoading: vdotLoading } = useVdotHistory(athleteId ?? 0);
 
   // Weekly aggregation
   const weeklyData = useMemo(() => {
@@ -65,7 +90,7 @@ export function AthleteAnalytics() {
       }));
   }, [logs]);
 
-  // Category distribution (volume by category)
+  // Category distribution
   const categoryData = useMemo(() => {
     if (!logs || logs.length === 0) return [];
     const cats = new Map<string, number>();
@@ -82,7 +107,7 @@ export function AthleteAnalytics() {
     }));
   }, [logs]);
 
-  // Intensity distribution (by RPE)
+  // Intensity distribution
   const intensityData = useMemo(() => {
     if (!logs || logs.length === 0) return [];
     let easy = 0, moderate = 0, hard = 0;
@@ -110,6 +135,33 @@ export function AthleteAnalytics() {
         score: c.readiness_score ?? 0,
       }));
   }, [checkins]);
+
+  // Fitness/Fatigue chart data
+  const fitnessChart = useMemo(() => {
+    if (!fitness?.points || fitness.points.length === 0) return [];
+    const pts = fitness.points;
+    const step = Math.max(1, Math.floor(pts.length / 60));
+    return pts.filter((_, i) => i % step === 0 || i === pts.length - 1).map((p) => ({
+      day: p.day.slice(5),
+      CTL: p.ctl,
+      ATL: p.atl,
+      TSB: p.tsb,
+    }));
+  }, [fitness]);
+
+  // Pace trends
+  const paceTrend = useMemo(() => {
+    if (!logs || logs.length === 0) return [];
+    const paced = logs.filter((l) => l.avg_pace_sec_per_km && l.avg_pace_sec_per_km > 0);
+    if (paced.length === 0) return [];
+    return [...paced]
+      .sort((a, b) => a.date.localeCompare(b.date))
+      .map((l) => ({
+        date: l.date.slice(5),
+        pace: l.avg_pace_sec_per_km!,
+        category: l.session_category,
+      }));
+  }, [logs]);
 
   // Summary stats
   const stats = useMemo(() => {
@@ -201,6 +253,102 @@ export function AthleteAnalytics() {
         </Card>
       </div>
 
+      {/* Fitness & Fatigue Chart */}
+      {!fitnessLoading && fitnessChart.length > 0 && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Heart className="h-5 w-5 text-red-500" />
+                Fitness & Fatigue
+              </CardTitle>
+              {fitness && (
+                <div className="flex items-center gap-3">
+                  <div className="text-sm">
+                    <span className="text-muted-foreground">Form: </span>
+                    <span className="font-medium">{fitness.current_tsb.toFixed(1)}</span>
+                  </div>
+                  <Badge variant={readinessVariant(fitness.readiness)}>
+                    {readinessLabel(fitness.readiness)}
+                  </Badge>
+                </div>
+              )}
+            </div>
+          </CardHeader>
+          <CardContent>
+            <ResponsiveContainer width="100%" height={300}>
+              <ComposedChart data={fitnessChart}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="day" tick={{ fontSize: 11 }} interval="preserveStartEnd" />
+                <YAxis tick={{ fontSize: 12 }} />
+                <Tooltip />
+                <Legend />
+                <Line type="monotone" dataKey="CTL" name="Fitness (CTL)" stroke="#3b82f6" strokeWidth={2} dot={false} />
+                <Line type="monotone" dataKey="ATL" name="Fatigue (ATL)" stroke="#ef4444" strokeWidth={2} dot={false} />
+                <Area type="monotone" dataKey="TSB" name="Form (TSB)" fill="#10b98133" stroke="#10b981" strokeWidth={1} />
+              </ComposedChart>
+            </ResponsiveContainer>
+            {fitness && (
+              <div className="mt-3 grid gap-2 sm:grid-cols-3 text-sm">
+                <div className="rounded-lg border p-2 text-center">
+                  <p className="text-muted-foreground">Fitness (CTL)</p>
+                  <p className="font-bold text-blue-600">{fitness.current_ctl.toFixed(1)}</p>
+                </div>
+                <div className="rounded-lg border p-2 text-center">
+                  <p className="text-muted-foreground">Fatigue (ATL)</p>
+                  <p className="font-bold text-red-600">{fitness.current_atl.toFixed(1)}</p>
+                </div>
+                <div className="rounded-lg border p-2 text-center">
+                  <p className="text-muted-foreground">Form (TSB)</p>
+                  <p className="font-bold text-emerald-600">{fitness.current_tsb.toFixed(1)}</p>
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* VDOT Progression */}
+      {!vdotLoading && vdotData && vdotData.points.length > 0 && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Zap className="h-5 w-5 text-amber-500" />
+                VDOT Progression
+              </CardTitle>
+              <div className="flex items-center gap-3 text-sm">
+                {vdotData.current_vdot && (
+                  <span>Current: <strong>{vdotData.current_vdot}</strong></span>
+                )}
+                {vdotData.peak_vdot && (
+                  <span>Peak: <strong>{vdotData.peak_vdot}</strong></span>
+                )}
+                <Badge variant={vdotData.trend === "improving" ? "success" : vdotData.trend === "declining" ? "danger" : "secondary"}>
+                  {vdotData.trend}
+                </Badge>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <ResponsiveContainer width="100%" height={240}>
+              <LineChart data={vdotData.points.map((p) => ({ date: p.date.slice(5), vdot: p.vdot }))}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="date" tick={{ fontSize: 12 }} />
+                <YAxis domain={["dataMin - 2", "dataMax + 2"]} tick={{ fontSize: 12 }} />
+                <Tooltip />
+                <Line type="monotone" dataKey="vdot" name="VDOT" stroke="#f59e0b" strokeWidth={2} dot={{ r: 4 }} />
+              </LineChart>
+            </ResponsiveContainer>
+            {vdotData.improvement_per_month !== 0 && (
+              <p className="mt-2 text-sm text-muted-foreground text-center">
+                {vdotData.improvement_per_month > 0 ? "+" : ""}{vdotData.improvement_per_month.toFixed(2)} VDOT/month
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
       {/* Weekly Volume Chart */}
       {weeklyData.length > 0 && (
         <Card>
@@ -219,6 +367,30 @@ export function AthleteAnalytics() {
                 <Bar yAxisId="left" dataKey="duration" name="Duration (min)" fill="#3b82f6" radius={[4, 4, 0, 0]} />
                 <Bar yAxisId="right" dataKey="load" name="Load" fill="#f59e0b" radius={[4, 4, 0, 0]} />
               </BarChart>
+            </ResponsiveContainer>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Pace Trends */}
+      {paceTrend.length > 3 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Pace Trend</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ResponsiveContainer width="100%" height={240}>
+              <LineChart data={paceTrend}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="date" tick={{ fontSize: 12 }} />
+                <YAxis
+                  tick={{ fontSize: 12 }}
+                  reversed
+                  tickFormatter={(v) => formatPace(v)}
+                />
+                <Tooltip formatter={(value: number) => [formatPace(value), "Pace"]} />
+                <Line type="monotone" dataKey="pace" name="Pace" stroke="#8b5cf6" strokeWidth={2} dot={{ r: 2 }} />
+              </LineChart>
             </ResponsiveContainer>
           </CardContent>
         </Card>

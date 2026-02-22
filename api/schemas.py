@@ -459,3 +459,79 @@ class BatchDecisionInput(BaseModel):
     decision: str
     note: str = Field(default="", max_length=1000)
     modified_action: Optional[str] = None
+
+
+# --- Phase 2: Athlete Intelligence ---
+
+class SessionBriefingOut(BaseModel):
+    has_checkin: bool = False
+    readiness_score: Optional[float] = None
+    readiness_band: Optional[str] = None
+    acute_chronic_ratio: float = 1.0
+    vdot: Optional[int] = None
+    phase: Optional[str] = None
+    max_hr: Optional[int] = None
+    resting_hr: Optional[int] = None
+    threshold_pace: Optional[str] = None
+    easy_pace: Optional[str] = None
+    planned_session_name: Optional[str] = None
+    planned_session_status: Optional[str] = None
+    has_template: bool = False
+    prescription: Optional[str] = None
+    coaching_notes: Optional[str] = None
+    adaptation_action: Optional[str] = None
+    adaptation_reason: Optional[str] = None
+    adapted_blocks: list[dict] = Field(default_factory=list)
+    progression_rules: Optional[dict] = None
+    regression_rules: Optional[dict] = None
+    today_logged: bool = False
+
+
+class TrainingLoadSummaryOut(BaseModel):
+    has_data: bool = False
+    monotony: float = 0.0
+    strain: float = 0.0
+    risk_level: str = "low"
+    total_load: float = 0.0
+    session_count: int = 0
+    avg_daily_load: float = 0.0
+
+
+class FitnessFatigueOut(BaseModel):
+    points: list[dict] = Field(default_factory=list)
+    current_ctl: float = 0.0
+    current_atl: float = 0.0
+    current_tsb: float = 0.0
+    readiness: str = "insufficient_data"
+
+
+class VdotHistoryOut(BaseModel):
+    points: list[dict] = Field(default_factory=list)
+    current_vdot: Optional[float] = None
+    peak_vdot: Optional[float] = None
+    trend: str = "insufficient_data"
+    improvement_per_month: float = 0.0
+
+
+class RacePredictionOut(BaseModel):
+    predictions: dict[str, list[dict]] = Field(default_factory=dict)
+    source_vdot: Optional[int] = None
+    source_event: Optional[str] = None
+
+
+class AthleteProfileOut(BaseModel):
+    id: int
+    first_name: str
+    last_name: str
+    email: str
+    dob: Optional[date] = None
+    max_hr: Optional[int] = None
+    resting_hr: Optional[int] = None
+    threshold_pace_sec_per_km: Optional[int] = None
+    easy_pace_sec_per_km: Optional[int] = None
+    vdot_score: Optional[int] = None
+    status: str
+    wearable_connections: list[dict] = Field(default_factory=list)
+    sync_logs: list[dict] = Field(default_factory=list)
+
+    model_config = {"from_attributes": True}

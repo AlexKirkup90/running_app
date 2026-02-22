@@ -343,3 +343,77 @@ export interface CoachNote {
   due_date: string | null;
   completed: boolean;
 }
+
+// --- Phase 2: Athlete Intelligence ---
+
+export interface SessionBriefing {
+  has_checkin: boolean;
+  readiness_score: number | null;
+  readiness_band: string | null;
+  acute_chronic_ratio: number;
+  vdot: number | null;
+  phase: string | null;
+  max_hr: number | null;
+  resting_hr: number | null;
+  threshold_pace: string | null;
+  easy_pace: string | null;
+  planned_session_name: string | null;
+  planned_session_status: string | null;
+  has_template: boolean;
+  prescription: string | null;
+  coaching_notes: string | null;
+  adaptation_action: string | null;
+  adaptation_reason: string | null;
+  adapted_blocks: Record<string, unknown>[];
+  progression_rules: Record<string, unknown> | null;
+  regression_rules: Record<string, unknown> | null;
+  today_logged: boolean;
+}
+
+export interface TrainingLoadSummary {
+  has_data: boolean;
+  monotony: number;
+  strain: number;
+  risk_level: string;
+  total_load: number;
+  session_count: number;
+  avg_daily_load: number;
+}
+
+export interface FitnessFatigue {
+  points: { day: string; ctl: number; atl: number; tsb: number; load: number }[];
+  current_ctl: number;
+  current_atl: number;
+  current_tsb: number;
+  readiness: string;
+}
+
+export interface VdotHistory {
+  points: { date: string; vdot: number; source: string; distance_m: number }[];
+  current_vdot: number | null;
+  peak_vdot: number | null;
+  trend: string;
+  improvement_per_month: number;
+}
+
+export interface RacePredictions {
+  predictions: Record<string, { distance_label: string; predicted_display: string; method: string; vdot_used: number | null }[]>;
+  source_vdot: number | null;
+  source_event: string | null;
+}
+
+export interface AthleteProfile {
+  id: number;
+  first_name: string;
+  last_name: string;
+  email: string;
+  dob: string | null;
+  max_hr: number | null;
+  resting_hr: number | null;
+  threshold_pace_sec_per_km: number | null;
+  easy_pace_sec_per_km: number | null;
+  vdot_score: number | null;
+  status: string;
+  wearable_connections: { id: number; service: string; sync_status: string; last_sync_at: string | null; external_athlete_id: string | null }[];
+  sync_logs: { id: number; service: string; status: string; activities_found: number; activities_imported: number; started_at: string | null }[];
+}
