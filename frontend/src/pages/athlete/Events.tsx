@@ -5,7 +5,7 @@ import { useRacePredictions } from "@/hooks/useAthleteIntelligence";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { CalendarDays, Clock, Plus, Timer, Trophy, Zap } from "lucide-react";
+import { CalendarDays, Clock, Plus, Timer, Trophy } from "lucide-react";
 
 const DISTANCES = ["5K", "10K", "Half Marathon", "Marathon", "Other"] as const;
 

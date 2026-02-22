@@ -43,13 +43,6 @@ function riskVariant(level: string) {
   return "danger" as const;
 }
 
-function formatPace(secPerKm: number | null) {
-  if (!secPerKm) return "—";
-  const min = Math.floor(secPerKm / 60);
-  const sec = Math.round(secPerKm % 60);
-  return `${min}:${sec.toString().padStart(2, "0")}`;
-}
-
 function paceLabel(label: string) {
   const map: Record<string, string> = { E: "Easy", M: "Marathon", T: "Threshold", I: "Interval", R: "Repetition" };
   return map[label] ?? label;
@@ -275,7 +268,6 @@ export function AthleteDashboard() {
                       <tbody>
                         {briefing.adapted_blocks.map((block, i) => {
                           const target = block.target as Record<string, unknown> | undefined;
-                          const intervals = block.intervals as Record<string, unknown>[] | undefined;
                           return (
                             <tr key={i} className="border-b last:border-0">
                               <td className="p-2 capitalize">{String(block.phase ?? "—")}</td>
@@ -315,7 +307,7 @@ export function AthleteDashboard() {
                             <div key={j} className="flex items-center gap-3 text-sm text-muted-foreground">
                               <span>{String(ivl.reps ?? 1)}x</span>
                               <span>{String(ivl.work_duration_min ?? "?")} min work</span>
-                              {ivl.work_pace_display && (
+                              {ivl.work_pace_display != null && (
                                 <Badge variant="outline">{String(ivl.work_pace_display)}/km</Badge>
                               )}
                               <span>{String(ivl.recovery_duration_min ?? "?")} min rec</span>
