@@ -4,16 +4,18 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useAuthStore } from "@/stores/auth";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { RequireAuth } from "@/components/layout/RequireAuth";
+import { ToastProvider } from "@/components/ui/toast";
 import { LoginPage } from "@/pages/Login";
 import { CoachDashboard } from "@/pages/coach/Dashboard";
 import { CoachClients } from "@/pages/coach/Clients";
+import { CoachAthleteDetail } from "@/pages/coach/AthleteDetail";
 import { CoachCommandCenter } from "@/pages/coach/CommandCenter";
 import { CoachOrganization } from "@/pages/coach/Organization";
-import { CoachTeam } from "@/pages/coach/Team";
-import { CoachAssignments } from "@/pages/coach/Assignments";
 import { CoachCommunity } from "@/pages/coach/Community";
 import { CoachPlanBuilder } from "@/pages/coach/PlanBuilder";
 import { CoachSessionLibrary } from "@/pages/coach/SessionLibrary";
+import { CoachAnalytics } from "@/pages/coach/Analytics";
+import { CoachIntegrations } from "@/pages/coach/Integrations";
 import { AthleteDashboard } from "@/pages/athlete/Dashboard";
 import { AthleteCheckIn } from "@/pages/athlete/CheckIn";
 import { AthleteLog } from "@/pages/athlete/Log";
@@ -53,13 +55,14 @@ function AppRoutes() {
       >
         <Route path="/coach" element={<CoachDashboard />} />
         <Route path="/coach/clients" element={<CoachClients />} />
+        <Route path="/coach/clients/:athleteId" element={<CoachAthleteDetail />} />
         <Route path="/coach/command-center" element={<CoachCommandCenter />} />
         <Route path="/coach/plan-builder" element={<CoachPlanBuilder />} />
         <Route path="/coach/session-library" element={<CoachSessionLibrary />} />
+        <Route path="/coach/analytics" element={<CoachAnalytics />} />
         <Route path="/coach/organization" element={<CoachOrganization />} />
-        <Route path="/coach/team" element={<CoachTeam />} />
-        <Route path="/coach/assignments" element={<CoachAssignments />} />
         <Route path="/coach/community" element={<CoachCommunity />} />
+        <Route path="/coach/integrations" element={<CoachIntegrations />} />
       </Route>
 
       {/* Athlete routes */}
@@ -101,9 +104,11 @@ function AppRoutes() {
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <AppRoutes />
-      </BrowserRouter>
+      <ToastProvider>
+        <BrowserRouter>
+          <AppRoutes />
+        </BrowserRouter>
+      </ToastProvider>
     </QueryClientProvider>
   );
 }

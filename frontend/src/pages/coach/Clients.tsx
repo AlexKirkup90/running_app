@@ -1,7 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
 import { fetchCoachClients } from "@/api/client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { TableSkeleton } from "@/components/ui/skeleton";
 import {
   Table,
   TableBody,
@@ -10,6 +12,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { ChevronRight } from "lucide-react";
 
 function riskBadgeVariant(label: string) {
   switch (label) {
@@ -54,9 +57,7 @@ export function CoachClients() {
         </CardHeader>
         <CardContent>
           {isLoading ? (
-            <p className="py-10 text-center text-sm text-muted-foreground">
-              Loading...
-            </p>
+            <TableSkeleton rows={5} />
           ) : clients && clients.length > 0 ? (
             <Table>
               <TableHeader>
@@ -67,13 +68,16 @@ export function CoachClients() {
                   <TableHead className="text-center">Open Interventions</TableHead>
                   <TableHead>Last Check-in</TableHead>
                   <TableHead>Last Log</TableHead>
+                  <TableHead />
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {clients.map((c) => (
-                  <TableRow key={c.athlete_id}>
+                  <TableRow key={c.athlete_id} className="cursor-pointer hover:bg-accent/50">
                     <TableCell className="font-medium">
-                      {c.first_name} {c.last_name}
+                      <Link to={`/coach/clients/${c.athlete_id}`} className="hover:underline">
+                        {c.first_name} {c.last_name}
+                      </Link>
                     </TableCell>
                     <TableCell className="text-muted-foreground">
                       {c.email}
@@ -97,6 +101,11 @@ export function CoachClients() {
                     </TableCell>
                     <TableCell className="text-muted-foreground">
                       {formatDate(c.last_log)}
+                    </TableCell>
+                    <TableCell>
+                      <Link to={`/coach/clients/${c.athlete_id}`}>
+                        <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                      </Link>
                     </TableCell>
                   </TableRow>
                 ))}

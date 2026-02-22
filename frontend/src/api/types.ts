@@ -414,6 +414,32 @@ export interface AthleteProfile {
   easy_pace_sec_per_km: number | null;
   vdot_score: number | null;
   status: string;
-  wearable_connections: { id: number; service: string; sync_status: string; last_sync_at: string | null; external_athlete_id: string | null }[];
-  sync_logs: { id: number; service: string; status: string; activities_found: number; activities_imported: number; started_at: string | null }[];
+  wearable_connections: WearableConnection[];
+  sync_logs: SyncLog[];
+}
+
+// --- Phase 3: Integrations ---
+
+export interface Webhook {
+  hook_id: string;
+  url: string;
+  events: string[];
+  created_at: string;
+}
+
+export interface WearableConnection {
+  id: number;
+  service: string;
+  sync_status: string;
+  last_sync_at: string | null;
+  external_athlete_id: string | null;
+}
+
+export interface SyncLog {
+  id: number;
+  service: string;
+  status: string;
+  activities_found: number;
+  activities_imported: number;
+  started_at: string | null;
 }

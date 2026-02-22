@@ -610,4 +610,39 @@ export function fetchAthleteProfile(athleteId: number): Promise<import("./types"
   return request(`/athletes/${athleteId}/profile`);
 }
 
+// --- Phase 3: Webhooks ---
+
+export function fetchWebhooks(): Promise<import("./types").Webhook[]> {
+  return request("/webhooks");
+}
+
+export function registerWebhook(data: {
+  url: string;
+  events: string[];
+  secret?: string;
+}): Promise<import("./types").Webhook> {
+  return request("/webhooks", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export function deleteWebhook(hookId: string): Promise<MessageResponse> {
+  return request(`/webhooks/${hookId}`, { method: "DELETE" });
+}
+
+// --- Phase 3: Wearable Connections ---
+
+export function fetchWearableConnections(): Promise<import("./types").WearableConnection[]> {
+  return request("/wearables/connections");
+}
+
+export function deleteWearableConnection(connectionId: number): Promise<MessageResponse> {
+  return request(`/wearables/connections/${connectionId}`, { method: "DELETE" });
+}
+
+export function fetchWearableSyncLogs(): Promise<import("./types").SyncLog[]> {
+  return request("/wearables/sync-logs");
+}
+
 export { ApiError };

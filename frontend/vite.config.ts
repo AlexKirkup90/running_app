@@ -21,5 +21,15 @@ export default defineConfig({
   build: {
     outDir: "dist",
     sourcemap: true,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vendor: ["react", "react-dom", "react-router-dom"],
+          charts: ["recharts"],
+          query: ["@tanstack/react-query"],
+          ui: ["@radix-ui/react-tabs", "@radix-ui/react-dialog", "lucide-react"],
+        },
+      },
+    },
   },
 });

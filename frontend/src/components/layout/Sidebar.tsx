@@ -10,12 +10,12 @@ import {
   Target,
   TrendingUp,
   Building2,
-  Shield,
-  ArrowRightLeft,
   HeartHandshake,
   Hammer,
   BookOpen,
   UserCircle,
+  BarChart3,
+  Link2,
 } from "lucide-react";
 import { useAuthStore } from "@/stores/auth";
 import { cn } from "@/lib/utils";
@@ -26,10 +26,10 @@ const coachLinks = [
   { to: "/coach/plan-builder", icon: Hammer, label: "Plan Builder" },
   { to: "/coach/session-library", icon: BookOpen, label: "Session Library" },
   { to: "/coach/command-center", icon: AlertTriangle, label: "Command Center" },
+  { to: "/coach/analytics", icon: BarChart3, label: "Analytics" },
   { to: "/coach/community", icon: HeartHandshake, label: "Community" },
   { to: "/coach/organization", icon: Building2, label: "Organization" },
-  { to: "/coach/team", icon: Shield, label: "Team" },
-  { to: "/coach/assignments", icon: ArrowRightLeft, label: "Assignments" },
+  { to: "/coach/integrations", icon: Link2, label: "Integrations" },
 ];
 
 const athleteLinks = [
@@ -46,16 +46,27 @@ const athleteLinks = [
 export function Sidebar() {
   const { role, username, logout } = useAuthStore();
   const links = role === "coach" ? coachLinks : athleteLinks;
+  const roleLabel = role === "coach" ? "Coach" : "Athlete";
 
   return (
-    <aside className="flex h-screen w-64 flex-col border-r bg-card">
-      <div className="flex h-14 items-center border-b px-4">
+    <aside className="flex h-screen w-64 shrink-0 flex-col border-r bg-card">
+      <div className="flex h-14 items-center justify-between border-b px-4">
         <span className="text-lg font-bold tracking-tight text-primary">
           Run Season
         </span>
+        <span
+          className={cn(
+            "rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider",
+            role === "coach"
+              ? "bg-blue-100 text-blue-700"
+              : "bg-emerald-100 text-emerald-700",
+          )}
+        >
+          {roleLabel}
+        </span>
       </div>
 
-      <nav className="flex-1 space-y-1 p-3">
+      <nav className="flex-1 overflow-y-auto space-y-1 p-3">
         {links.map(({ to, icon: Icon, label }) => (
           <NavLink
             key={to}
@@ -78,7 +89,7 @@ export function Sidebar() {
 
       <div className="border-t p-3">
         <div className="mb-2 px-3 text-xs text-muted-foreground">
-          {username} ({role})
+          {username}
         </div>
         <button
           onClick={logout}
