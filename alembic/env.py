@@ -12,9 +12,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from core.config import get_database_url
-from core.db import Base
-from core import models  # noqa: F401
+from core.config import get_database_url  # noqa: E402
+from core.db import Base  # noqa: E402
+from core import models  # noqa: E402,F401
 
 config = context.config
 config.set_main_option("sqlalchemy.url", get_database_url())

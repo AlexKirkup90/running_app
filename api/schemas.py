@@ -679,6 +679,30 @@ class SessionLibraryGovernanceReportResponse(BaseModel):
     recent_actions: list[CoachAuditLogItem] = Field(default_factory=list)
 
 
+class SessionLibraryQualityCheck(BaseModel):
+    code: str
+    passed: bool
+    expected: Any = None
+    observed: Any = None
+    details: str
+
+
+class SessionLibraryQualityCloseoutResponse(BaseModel):
+    generated_at: dt_datetime
+    ready_for_stage_exit: bool
+    expected_template_count: int
+    installed_gold_template_count: int
+    missing_template_count: int
+    missing_template_names: list[str] = Field(default_factory=list)
+    canonical_mismatch_count: int
+    methodology_mismatch_count: int
+    duplicate_audit_summary: SessionLibraryDuplicateAuditSummary
+    metadata_audit_summary: SessionLibraryMetadataAuditSummary
+    core_category_coverage: dict[str, int] = Field(default_factory=dict)
+    checks: list[SessionLibraryQualityCheck] = Field(default_factory=list)
+    recommendations: list[str] = Field(default_factory=list)
+
+
 class PlanPreviewRequest(BaseModel):
     athlete_id: int
     plan_name: Optional[str] = Field(default=None, max_length=200)

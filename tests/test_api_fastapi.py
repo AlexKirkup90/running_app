@@ -680,7 +680,6 @@ def test_events_crud_and_preferences_endpoints(tmp_path, monkeypatch):
 
 def test_coach_people_management_create_coach_and_athlete(tmp_path, monkeypatch):
     with _build_client(tmp_path, monkeypatch) as client:
-        coach_headers = _auth_headers(client, "coach_ok", "CoachOkay!234")
         admin_headers = _auth_headers(client, "master", "MasterPass!234")
         athlete_headers = _auth_headers(client, "athlete1", "AthletePass!234")
 
@@ -1303,6 +1302,32 @@ def test_session_library_governance_report_endpoint(tmp_path, monkeypatch):
         assert body["template_count"] >= 1
 
 
+def test_session_library_quality_closeout_endpoint(tmp_path, monkeypatch):
+    with _build_client(tmp_path, monkeypatch) as client:
+        coach_headers = _auth_headers(client, "coach_ok", "CoachOkay!234")
+        athlete_headers = _auth_headers(client, "athlete1", "AthletePass!234")
+
+        forbidden = client.get("/api/v1/coach/session-library/governance/quality-closeout", headers=athlete_headers)
+        assert forbidden.status_code == 403
+
+        seed_gold = client.post("/api/v1/coach/session-library/gold-standard-pack", headers=coach_headers)
+        assert seed_gold.status_code == 200, seed_gold.text
+
+        closeout = client.get("/api/v1/coach/session-library/governance/quality-closeout?min_similarity=0.78", headers=coach_headers)
+        assert closeout.status_code == 200, closeout.text
+        body = closeout.json()
+        assert body["ready_for_stage_exit"] is True
+        assert body["expected_template_count"] >= 100
+        assert body["installed_gold_template_count"] == body["expected_template_count"]
+        assert body["missing_template_count"] == 0
+        assert body["canonical_mismatch_count"] == 0
+        assert body["methodology_mismatch_count"] == 0
+        assert body["duplicate_audit_summary"]["exact_duplicate_pairs"] == 0
+        assert body["metadata_audit_summary"]["error_count"] == 0
+        assert all(item["passed"] is True for item in body["checks"])
+        assert all(int(v) > 0 for v in body["core_category_coverage"].values())
+
+
 def test_session_library_crud_and_validate_endpoints(tmp_path, monkeypatch):
     from core.services.session_library import default_progression, default_regression, default_structure, default_targets
 
@@ -1535,7 +1560,7 @@ def test_session_library_bulk_deprecate_legacy_endpoint(tmp_path, monkeypatch):
         assert apply_body["changed_count"] >= 1
 
         legacy_listing = client.get(
-            f"/api/v1/coach/session-library?q=Legacy%20Generic%20Easy%20Template&offset=0&limit=5",
+            "/api/v1/coach/session-library?q=Legacy%20Generic%20Easy%20Template&offset=0&limit=5",
             headers=coach_headers,
         )
         assert legacy_listing.status_code == 200, legacy_listing.text
@@ -1609,7 +1634,7 @@ def test_session_library_bulk_canonicalize_duplicates_endpoint(tmp_path, monkeyp
         assert apply_body["applied_count"] >= 1
 
         listing = client.get(
-            f"/api/v1/coach/session-library?q=Long%20Run%20(E)%2090min%20Legacy%20Clone&offset=0&limit=5",
+            "/api/v1/coach/session-library?q=Long%20Run%20(E)%2090min%20Legacy%20Clone&offset=0&limit=5",
             headers=coach_headers,
         )
         assert listing.status_code == 200, listing.text

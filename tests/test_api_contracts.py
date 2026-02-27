@@ -925,3 +925,55 @@ def test_session_library_governance_report_contract(tmp_path, monkeypatch):
         if body["recent_actions"]:
             item = body["recent_actions"][0]
             _assert_exact_keys(item, {"id", "scope", "actor_user_id", "actor_username", "created_at", "payload"})
+
+
+def test_session_library_quality_closeout_contract(tmp_path, monkeypatch):
+    with _build_client(tmp_path, monkeypatch) as client:
+        headers = _auth_headers(client, "coach_ok", "CoachOkay!234")
+        seed = client.post("/api/v1/coach/session-library/gold-standard-pack", headers=headers)
+        assert seed.status_code == 200, seed.text
+
+        resp = client.get("/api/v1/coach/session-library/governance/quality-closeout?min_similarity=0.78", headers=headers)
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        _assert_exact_keys(
+            body,
+            {
+                "generated_at",
+                "ready_for_stage_exit",
+                "expected_template_count",
+                "installed_gold_template_count",
+                "missing_template_count",
+                "missing_template_names",
+                "canonical_mismatch_count",
+                "methodology_mismatch_count",
+                "duplicate_audit_summary",
+                "metadata_audit_summary",
+                "core_category_coverage",
+                "checks",
+                "recommendations",
+            },
+        )
+        assert isinstance(body["generated_at"], str)
+        assert isinstance(body["ready_for_stage_exit"], bool)
+        assert isinstance(body["expected_template_count"], int)
+        assert isinstance(body["installed_gold_template_count"], int)
+        assert isinstance(body["missing_template_count"], int)
+        assert isinstance(body["missing_template_names"], list)
+        assert isinstance(body["canonical_mismatch_count"], int)
+        assert isinstance(body["methodology_mismatch_count"], int)
+        assert isinstance(body["core_category_coverage"], dict)
+        assert isinstance(body["checks"], list)
+        assert isinstance(body["recommendations"], list)
+
+        dup = body["duplicate_audit_summary"]
+        _assert_exact_keys(dup, {"template_count", "exact_duplicate_pairs", "near_duplicate_pairs", "candidate_count"})
+        meta = body["metadata_audit_summary"]
+        _assert_exact_keys(meta, {"template_count", "templates_with_issues", "error_count", "warning_count"})
+
+        if body["checks"]:
+            check = body["checks"][0]
+            _assert_exact_keys(check, {"code", "passed", "expected", "observed", "details"})
+            assert isinstance(check["code"], str)
+            assert isinstance(check["passed"], bool)
+            assert isinstance(check["details"], str)

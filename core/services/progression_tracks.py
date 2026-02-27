@@ -652,7 +652,6 @@ def planner_ruleset_validation_warnings(payload: Any, *, baseline: Optional[Dict
         warnings.append("No effective changes detected compared to the active ruleset.")
         return warnings
 
-    meta = dict(payload.get("meta") or {})
     if not diff.get("meta_changed_keys"):
         warnings.append("Rules changed but version strings were not updated in meta.*_version fields.")
 

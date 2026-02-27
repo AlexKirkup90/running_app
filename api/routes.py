@@ -56,7 +56,7 @@ from core.services.session_engine import (
     hr_range_for_label,
     pace_range_for_label,
 )
-from core.services.session_library import default_structure, validate_session_payload
+from core.services.session_library import default_structure, gold_standard_session_templates_v1, validate_session_payload
 from core.services.session_library import valid_zone_label
 from core.services.planning import assign_week_sessions, generate_plan_weeks
 from core.services.vdot_methodology import derived_profile_pace_anchors
@@ -149,6 +149,8 @@ from api.schemas import (
     SessionLibraryGovernanceActionRequest,
     SessionLibraryGovernanceActionResponse,
     SessionLibraryGovernanceReportResponse,
+    SessionLibraryQualityCheck,
+    SessionLibraryQualityCloseoutResponse,
     SessionLibraryMetadataAuditIssue,
     SessionLibraryMetadataAuditResponse,
     SessionLibraryMetadataAuditSummary,
@@ -854,6 +856,119 @@ def _session_library_governance_report_payload(db: Session, *, recent_limit: int
         top_categories=top_categories,
         recent_scope_counts=recent_scope_counts,
         recent_actions=recent_actions,
+    )
+
+
+def _session_library_quality_closeout_payload(
+    db: Session,
+    *,
+    min_similarity: float = 0.78,
+) -> SessionLibraryQualityCloseoutResponse:
+    rows = db.execute(select(SessionLibrary).order_by(SessionLibrary.id.asc())).scalars().all()
+    expected_templates = gold_standard_session_templates_v1()
+    expected_names = {str(item.get("name") or "").strip() for item in expected_templates if str(item.get("name") or "").strip()}
+    expected_count = len(expected_names)
+
+    gold_rows = [row for row in rows if str(row.name or "").strip() in expected_names]
+    installed_names = {str(row.name or "").strip() for row in gold_rows}
+    missing_names = sorted(expected_names - installed_names)
+
+    canonical_mismatches = [row for row in gold_rows if str(row.status or "active").strip().lower() != "canonical"]
+    method_mismatches = [row for row in gold_rows if _session_template_methodology(row) != "daniels_vdot"]
+
+    duplicate_audit = _session_library_duplicate_audit(
+        gold_rows,
+        limit=max(1, len(gold_rows) * 5),
+        min_similarity=float(min_similarity),
+    )
+    metadata_audit = _session_library_metadata_audit(gold_rows, limit=max(1, len(gold_rows)))
+
+    def _contains_any(name: str, tokens: list[str]) -> bool:
+        text = str(name or "").strip().lower()
+        return any(tok in text for tok in tokens)
+
+    coverage = {
+        "long_run": sum(1 for row in gold_rows if _contains_any(row.name, ["long run"])),
+        "threshold": sum(1 for row in gold_rows if _contains_any(row.name, ["threshold"])),
+        "vo2": sum(1 for row in gold_rows if _contains_any(row.name, ["vo2"])),
+        "marathon_pace": sum(1 for row in gold_rows if _contains_any(row.name, ["marathon pace", " m)", " m "])),
+        "recovery": sum(1 for row in gold_rows if _contains_any(row.name, ["recovery"])),
+        "strides": sum(1 for row in gold_rows if _contains_any(row.name, ["strides", "repetition (r)"])),
+        "openers": sum(1 for row in gold_rows if _contains_any(row.name, ["openers"])),
+    }
+
+    checks = [
+        SessionLibraryQualityCheck(
+            code="gold_pack_installed",
+            passed=(len(gold_rows) == expected_count and not missing_names),
+            expected=expected_count,
+            observed=len(gold_rows),
+            details="All gold-standard template names are present in session library.",
+        ),
+        SessionLibraryQualityCheck(
+            code="gold_pack_all_canonical",
+            passed=(len(canonical_mismatches) == 0),
+            expected=0,
+            observed=len(canonical_mismatches),
+            details="Gold-standard templates must be canonical status for planner trust.",
+        ),
+        SessionLibraryQualityCheck(
+            code="gold_pack_all_daniels_vdot",
+            passed=(len(method_mismatches) == 0),
+            expected=0,
+            observed=len(method_mismatches),
+            details="Gold-standard templates must carry daniels_vdot methodology coding.",
+        ),
+        SessionLibraryQualityCheck(
+            code="gold_pack_exact_duplicate_pairs",
+            passed=(int(duplicate_audit.summary.exact_duplicate_pairs) == 0),
+            expected=0,
+            observed=int(duplicate_audit.summary.exact_duplicate_pairs),
+            details="No exact duplicate metadata/structure fingerprints within gold pack.",
+        ),
+        SessionLibraryQualityCheck(
+            code="gold_pack_metadata_errors",
+            passed=(int(metadata_audit.summary.error_count) == 0),
+            expected=0,
+            observed=int(metadata_audit.summary.error_count),
+            details="No schema/validation errors across gold-standard templates.",
+        ),
+        SessionLibraryQualityCheck(
+            code="core_category_coverage",
+            passed=all(int(count) > 0 for count in coverage.values()),
+            expected="all core categories > 0",
+            observed=coverage,
+            details="Gold pack covers long run, threshold, VO2, marathon pace, recovery, strides, and openers.",
+        ),
+    ]
+    ready_for_stage_exit = all(bool(item.passed) for item in checks)
+
+    recommendations: list[str] = []
+    if missing_names:
+        recommendations.append("Run POST /api/v1/coach/session-library/gold-standard-pack to install missing templates.")
+    if canonical_mismatches:
+        recommendations.append("Normalize status via governance actions so all gold templates are canonical.")
+    if method_mismatches:
+        recommendations.append("Fix methodology tags to daniels_vdot for all gold templates.")
+    if int(duplicate_audit.summary.exact_duplicate_pairs) > 0:
+        recommendations.append("Resolve exact duplicate template fingerprints in gold pack definitions.")
+    if int(metadata_audit.summary.error_count) > 0:
+        recommendations.append("Fix metadata contract errors in gold pack templates.")
+
+    return SessionLibraryQualityCloseoutResponse(
+        generated_at=datetime.utcnow(),
+        ready_for_stage_exit=ready_for_stage_exit,
+        expected_template_count=expected_count,
+        installed_gold_template_count=len(gold_rows),
+        missing_template_count=len(missing_names),
+        missing_template_names=missing_names,
+        canonical_mismatch_count=len(canonical_mismatches),
+        methodology_mismatch_count=len(method_mismatches),
+        duplicate_audit_summary=duplicate_audit.summary,
+        metadata_audit_summary=metadata_audit.summary,
+        core_category_coverage=coverage,
+        checks=checks,
+        recommendations=recommendations,
     )
 
 
@@ -4228,6 +4343,19 @@ def session_library_governance_report(
 ):
     del principal
     return _session_library_governance_report_payload(db, recent_limit=recent_limit)
+
+
+@router.get(
+    "/coach/session-library/governance/quality-closeout",
+    response_model=SessionLibraryQualityCloseoutResponse,
+)
+def session_library_quality_closeout(
+    min_similarity: float = Query(default=0.78, ge=0.5, le=1.0),
+    db: Session = Depends(get_db),
+    principal: AuthPrincipal = Depends(require_roles("coach")),
+):
+    del principal
+    return _session_library_quality_closeout_payload(db, min_similarity=min_similarity)
 
 
 @router.get("/coach/session-library/audit/duplicates", response_model=SessionLibraryDuplicateAuditResponse)
