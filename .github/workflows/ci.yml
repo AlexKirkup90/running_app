@@ -7,6 +7,9 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: .
+      DATABASE_URL: sqlite:///./ci_migrations.db
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -18,5 +21,7 @@ jobs:
           pip install -r requirements.txt
       - name: Lint
         run: ruff check .
+      - name: Migration Smoke Test
+        run: alembic upgrade head
       - name: Test
-        run: pytest -q
+        run: pytest -q --cov=. --cov-fail-under=60

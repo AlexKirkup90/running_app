@@ -31,8 +31,11 @@ class Athlete(Base):
     dob: Mapped[Optional[date]] = mapped_column(Date)
     max_hr: Mapped[Optional[int]] = mapped_column(Integer)
     resting_hr: Mapped[Optional[int]] = mapped_column(Integer)
+    vdot_seed: Mapped[Optional[float]] = mapped_column(Float)
     threshold_pace_sec_per_km: Mapped[Optional[int]] = mapped_column(Integer)
     easy_pace_sec_per_km: Mapped[Optional[int]] = mapped_column(Integer)
+    pace_source: Mapped[str] = mapped_column(String(30), default="manual")
+    assigned_coach_user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), index=True)
     status: Mapped[str] = mapped_column(String(20), default="active", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
@@ -44,11 +47,12 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
     athlete_id: Mapped[Optional[int]] = mapped_column(ForeignKey("athletes.id"))
+    status: Mapped[str] = mapped_column(String(20), default="active", index=True)
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=True)
     failed_attempts: Mapped[int] = mapped_column(Integer, default=0)
     locked_until: Mapped[Optional[datetime]] = mapped_column(DateTime)
     last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
-    athlete = relationship("Athlete")
+    athlete = relationship("Athlete", foreign_keys=[athlete_id])
 
 
 class SessionLibrary(Base):
@@ -67,12 +71,15 @@ class SessionLibrary(Base):
     regression_json: Mapped[dict] = mapped_column(JSON, default=dict)
     prescription: Mapped[str] = mapped_column(Text, default="")
     coaching_notes: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(20), default="active", index=True)
+    duplicate_of_template_id: Mapped[Optional[int]] = mapped_column(ForeignKey("sessions_library.id"))
 
 
 class Plan(Base):
     __tablename__ = "plans"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     athlete_id: Mapped[int] = mapped_column(ForeignKey("athletes.id"), index=True)
+    name: Mapped[str] = mapped_column(String(200), default="", nullable=False)
     race_goal: Mapped[str] = mapped_column(String(30), nullable=False)
     weeks: Mapped[int] = mapped_column(Integer, nullable=False)
     sessions_per_week: Mapped[int] = mapped_column(Integer, default=4)
@@ -103,7 +110,13 @@ class PlanDaySession(Base):
     athlete_id: Mapped[int] = mapped_column(ForeignKey("athletes.id"), index=True)
     session_day: Mapped[date] = mapped_column(Date, index=True)
     session_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    source_template_id: Mapped[Optional[int]] = mapped_column(ForeignKey("sessions_library.id"), index=True)
     source_template_name: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    compiled_session_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    compiled_methodology: Mapped[str] = mapped_column(String(40), default="")
+    compiled_vdot: Mapped[Optional[float]] = mapped_column(Float)
+    compiled_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    compile_context_json: Mapped[dict] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String(20), default="planned")
     __table_args__ = (
         UniqueConstraint("athlete_id", "session_day", name="uq_plan_day_session_athlete_day"),
@@ -224,6 +237,8 @@ class AthletePreference(Base):
     auto_apply_low_risk: Mapped[bool] = mapped_column(Boolean, default=False)
     auto_apply_confidence_min: Mapped[float] = mapped_column(Float, default=0.8)
     auto_apply_risk_max: Mapped[float] = mapped_column(Float, default=0.3)
+    preferred_training_days: Mapped[list] = mapped_column(JSON, default=list)
+    preferred_long_run_day: Mapped[Optional[str]] = mapped_column(String(10))
 
 
 class AppWriteLog(Base):

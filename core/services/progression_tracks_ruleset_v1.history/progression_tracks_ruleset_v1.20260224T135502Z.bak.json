@@ -1,0 +1,180 @@
+{
+  "meta": {
+    "source": "/Users/Alex/Documents/New project/running_app/core/services/progression_tracks_ruleset_v1.json",
+    "week_policy_version": "jd_week_policy_v1",
+    "progression_track_ruleset_version": "jd_progression_tracks_v1",
+    "token_orchestration_ruleset_version": "jd_token_orchestration_v1",
+    "quality_policy_rule_count": 16,
+    "token_orchestration_rule_count": 5
+  },
+  "quality_policy_rules": {
+    "5k": {
+      "base": {
+        "quality_focus": "threshold_foundation",
+        "short_race_mix_mode": "threshold_over_vo2",
+        "rationale": "base phase: emphasize threshold foundation before heavier VO2 density"
+      },
+      "build": {
+        "quality_focus": "threshold_vo2_blend",
+        "short_race_mix_mode": "diversify_threshold_vo2",
+        "rationale": "build phase: diversify threshold and VO2 stimulus across the week"
+      },
+      "peak": {
+        "quality_focus": "vo2_sharpening",
+        "short_race_mix_mode": "vo2_bias_with_threshold_support",
+        "rationale": "peak phase: bias toward VO2 sharpening while preserving threshold support"
+      },
+      "taper": {
+        "quality_focus": "sharpen_openers",
+        "short_race_mix_mode": "openers_or_light_quality",
+        "rationale": "taper phase: reduce fatigue and sharpen with openers/light quality"
+      }
+    },
+    "10k": {
+      "base": {
+        "quality_focus": "threshold_foundation",
+        "short_race_mix_mode": "threshold_over_vo2",
+        "rationale": "base phase: emphasize threshold foundation before heavier VO2 density"
+      },
+      "build": {
+        "quality_focus": "threshold_vo2_blend",
+        "short_race_mix_mode": "diversify_threshold_vo2",
+        "rationale": "build phase: diversify threshold and VO2 stimulus across the week"
+      },
+      "peak": {
+        "quality_focus": "vo2_sharpening",
+        "short_race_mix_mode": "vo2_bias_with_threshold_support",
+        "rationale": "peak phase: bias toward VO2 sharpening while preserving threshold support"
+      },
+      "taper": {
+        "quality_focus": "sharpen_openers",
+        "short_race_mix_mode": "openers_or_light_quality",
+        "rationale": "taper phase: reduce fatigue and sharpen with openers/light quality"
+      }
+    },
+    "half_marathon": {
+      "build": {
+        "quality_focus": "threshold_marathon_pace_blend",
+        "prefer_m_finish_long_run": true,
+        "rationale": "half-marathon build/peak weeks: blend threshold durability and M-pace support"
+      },
+      "peak": {
+        "quality_focus": "threshold_marathon_pace_blend",
+        "prefer_m_finish_long_run": true,
+        "rationale": "half-marathon build/peak weeks: blend threshold durability and M-pace support"
+      },
+      "base": {
+        "quality_focus": "aerobic_threshold_foundation",
+        "rationale": "base phase: aerobic + threshold foundation before race-specific M work"
+      },
+      "taper": {
+        "quality_focus": "specificity_maintenance_taper",
+        "rationale": "taper phase: maintain specificity while shedding fatigue"
+      }
+    },
+    "marathon": {
+      "build": {
+        "quality_focus": "marathon_specific_endurance",
+        "prefer_m_finish_long_run": true,
+        "rationale": "build/peak marathon weeks: prioritize M-pace specificity and long-run quality"
+      },
+      "peak": {
+        "quality_focus": "marathon_specific_endurance",
+        "prefer_m_finish_long_run": true,
+        "rationale": "build/peak marathon weeks: prioritize M-pace specificity and long-run quality"
+      },
+      "base": {
+        "quality_focus": "aerobic_threshold_foundation",
+        "rationale": "base phase: aerobic + threshold foundation before race-specific M work"
+      },
+      "taper": {
+        "quality_focus": "specificity_maintenance_taper",
+        "rationale": "taper phase: maintain specificity while shedding fatigue"
+      }
+    }
+  },
+  "token_orchestration_rules": [
+    {
+      "name": "short_race_base_w1_aerobic_foundation",
+      "race_focuses": [
+        "10k",
+        "5k"
+      ],
+      "phase": "base",
+      "phase_step_eq": 1,
+      "quality_focus_hint": "aerobic_foundation",
+      "rationale": "short-race base week 1: aerobic foundation before threshold introduction",
+      "action": null
+    },
+    {
+      "name": "short_race_base_threshold_intro",
+      "race_focuses": [
+        "10k",
+        "5k"
+      ],
+      "phase": "base",
+      "phase_step_gte": 2,
+      "quality_focus_hint": "threshold_foundation",
+      "rationale": "short-race base progression: replace one easy run with threshold session",
+      "action": {
+        "replace_first": [
+          "easy run",
+          "Tempo / Threshold"
+        ]
+      }
+    },
+    {
+      "name": "endurance_base_threshold_support",
+      "race_focuses": [
+        "half_marathon",
+        "marathon"
+      ],
+      "phase": "base",
+      "phase_step_gte": 2,
+      "sessions_per_week_gte": 4,
+      "quality_focus_hint": "aerobic_threshold_foundation",
+      "rationale": "endurance base progression: introduce threshold support in later base weeks",
+      "action": {
+        "replace_first": [
+          "easy run",
+          "Tempo / Threshold"
+        ]
+      }
+    },
+    {
+      "name": "endurance_build_specificity_shift",
+      "race_focuses": [
+        "half_marathon",
+        "marathon"
+      ],
+      "phase": "build",
+      "phase_step_gte": 2,
+      "quality_focus_hint": null,
+      "rationale": "build block progression: shift one VO2 token toward race-pace specificity",
+      "action": {
+        "replace_first": [
+          "vo2 intervals",
+          "Race Pace"
+        ]
+      }
+    },
+    {
+      "name": "short_race_peak_threshold_support_alt",
+      "race_focuses": [
+        "10k",
+        "5k"
+      ],
+      "phase": "peak",
+      "sessions_per_week_gte": 5,
+      "phase_step_even": true,
+      "quality_focus_hint": "vo2_sharpening",
+      "rationale": "peak block progression: add threshold support on alternating peak weeks",
+      "action": {
+        "replace_first": [
+          "easy run",
+          "Tempo / Threshold"
+        ]
+      }
+    }
+  ]
+}

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from core.config import get_settings
+
 
 @dataclass
 class Recommendation:
@@ -15,37 +17,42 @@ class Recommendation:
 
 
 def generate_recommendation(readiness: float, adherence: float, days_since_log: int, days_to_event: int) -> Recommendation:
+    settings = get_settings()
     factors: list[str] = []
-    risk = 0.2
-    conf = 0.75
-    action = "monitor"
+    risk = settings.intervention_base_risk
+    conf = settings.intervention_base_confidence
+    action = settings.intervention_action_monitor
 
-    if readiness < 2.8:
+    if readiness < settings.intervention_low_readiness_threshold:
         factors.append("low_readiness")
-        risk += 0.25
-        action = "recovery_week"
-    if adherence < 0.6:
+        risk += settings.intervention_low_readiness_risk_bump
+        action = settings.intervention_action_recovery_week
+    if adherence < settings.intervention_low_adherence_threshold:
         factors.append("low_adherence")
-        action = "contact_athlete"
-        conf += 0.05
-    if days_since_log > 4:
+        action = settings.intervention_action_contact_athlete
+        conf += settings.intervention_low_adherence_confidence_bump
+    if days_since_log > settings.intervention_no_recent_logs_days:
         factors.append("no_recent_logs")
-        action = "contact_athlete"
-        risk += 0.1
-    if 0 < days_to_event <= 14:
+        action = settings.intervention_action_contact_athlete
+        risk += settings.intervention_no_recent_logs_risk_bump
+    if 0 < days_to_event <= settings.intervention_event_proximity_days:
         factors.append("event_proximity")
-        action = "taper_week"
+        action = settings.intervention_action_taper_week
 
     risk = min(1.0, round(risk, 2))
     conf = min(0.99, round(conf, 2))
-    guardrail_pass = risk <= 0.85
+    guardrail_pass = risk <= settings.intervention_guardrail_risk_max
     reason = "ok" if guardrail_pass else "risk_too_high"
 
     return Recommendation(
         action=action,
         risk_score=risk,
         confidence_score=conf,
-        expected_impact={"fatigue_delta": -0.2 if action in {"recovery_week", "taper_week"} else 0.0},
+        expected_impact={
+            "fatigue_delta": -0.2
+            if action in {settings.intervention_action_recovery_week, settings.intervention_action_taper_week}
+            else 0.0
+        },
         why=factors or ["stable"],
         guardrail_pass=guardrail_pass,
         guardrail_reason=reason,

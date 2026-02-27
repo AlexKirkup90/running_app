@@ -11,6 +11,7 @@ from core.db import session_scope
 from core.models import Athlete, AthletePreference, CheckIn, Event, Plan, PlanDaySession, PlanWeek, SessionLibrary, TrainingLog, User
 from core.security import hash_password
 from core.services.planning import assign_week_sessions, generate_plan_weeks
+from core.services.session_library import gold_standard_session_templates_v1
 
 CATEGORIES = [
     "Easy Run",
@@ -145,33 +146,69 @@ def run_migrations() -> None:
 def seed_sessions() -> None:
     with session_scope() as s:
         existing = s.execute(select(SessionLibrary.id)).first()
-        if existing:
-            return
-        rows = []
-        for cat in CATEGORIES:
-            for duration in [25, 35, 45, 55, 65]:
-                for variant in ["outdoor", "treadmill"]:
-                    for tier in ["short", "medium", "long"]:
-                        contract = build_session_contract(cat, duration, variant, tier)
-                        name = f"{cat} {duration}min {variant} {tier}"
-                        rows.append(
-                            SessionLibrary(
-                                name=name,
-                                category=cat,
-                                intent=contract["intent"],
-                                energy_system=contract["energy_system"],
-                                tier=tier,
-                                is_treadmill=variant == "treadmill",
-                                duration_min=duration,
-                                structure_json=contract["structure_json"],
-                                targets_json=contract["targets_json"],
-                                progression_json=contract["progression_json"],
-                                regression_json=contract["regression_json"],
-                                coaching_notes=contract["coaching_notes"],
-                                prescription=contract["prescription"],
+        if not existing:
+            rows = []
+            for cat in CATEGORIES:
+                for duration in [25, 35, 45, 55, 65]:
+                    for variant in ["outdoor", "treadmill"]:
+                        for tier in ["short", "medium", "long"]:
+                            contract = build_session_contract(cat, duration, variant, tier)
+                            name = f"{cat} {duration}min {variant} {tier}"
+                            rows.append(
+                                SessionLibrary(
+                                    name=name,
+                                    category=cat,
+                                    intent=contract["intent"],
+                                    energy_system=contract["energy_system"],
+                                    tier=tier,
+                                    is_treadmill=variant == "treadmill",
+                                    duration_min=duration,
+                                    structure_json=contract["structure_json"],
+                                    targets_json=contract["targets_json"],
+                                    progression_json=contract["progression_json"],
+                                    regression_json=contract["regression_json"],
+                                    coaching_notes=contract["coaching_notes"],
+                                    prescription=contract["prescription"],
+                                )
                             )
-                        )
-        s.add_all(rows[:120])
+            s.add_all(rows[:120])
+            s.flush()
+        upsert_gold_standard_session_pack(_session=s)
+
+
+def upsert_gold_standard_session_pack(*, _session=None) -> dict[str, int]:
+    managed_session = _session is None
+    ctx = session_scope() if managed_session else None
+    s = ctx.__enter__() if ctx is not None else _session
+    assert s is not None
+    created = 0
+    updated = 0
+    try:
+        templates = gold_standard_session_templates_v1()
+        for payload in templates:
+            name = str(payload["name"])
+            row = s.execute(select(SessionLibrary).where(SessionLibrary.name == name)).scalar_one_or_none()
+            data = dict(payload)
+            duplicate_of_template_id = data.pop("duplicate_of_template_id", None)
+            if row is None:
+                row = SessionLibrary(**data)
+                row.duplicate_of_template_id = duplicate_of_template_id
+                s.add(row)
+                created += 1
+            else:
+                for key, value in data.items():
+                    setattr(row, key, value)
+                row.duplicate_of_template_id = duplicate_of_template_id
+                updated += 1
+        if managed_session and ctx is not None:
+            ctx.__exit__(None, None, None)
+            ctx = None
+        return {"created": created, "updated": updated, "template_count": len(templates)}
+    except Exception as exc:
+        if managed_session and ctx is not None:
+            ctx.__exit__(type(exc), exc, exc.__traceback__)
+            ctx = None
+        raise
 
 
 def seed_users_athletes() -> None:

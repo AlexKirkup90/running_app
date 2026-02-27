@@ -1,4 +1,6 @@
 streamlit==1.41.1
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
 sqlalchemy==2.0.36
 alembic==1.14.0
 psycopg2-binary==2.9.11
@@ -7,6 +9,11 @@ altair==5.5.0
 passlib==1.7.4
 bcrypt==4.0.1
 python-dateutil==2.9.0.post0
+pydantic-settings==2.7.1
+redis==5.2.1
+fastapi-cache2==0.2.2
+slowapi==0.1.9
+httpx==0.28.1
 pytest==8.3.4
 pytest-cov==6.0.0
 ruff==0.8.6

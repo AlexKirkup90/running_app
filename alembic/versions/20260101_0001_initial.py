@@ -19,7 +19,7 @@ def upgrade() -> None:
         sa.Column("email", sa.String(length=255), nullable=False, unique=True),
         sa.Column("dob", sa.Date(), nullable=True),
         sa.Column("status", sa.String(length=20), nullable=False, server_default="active"),
-        sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.text("now()")),
+        sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")),
     )
     op.create_index("ix_athletes_status", "athletes", ["status"])
 
@@ -139,7 +139,7 @@ def upgrade() -> None:
 
     op.create_table("session_reflections", sa.Column("id", sa.Integer(), primary_key=True), sa.Column("training_log_id", sa.Integer(), sa.ForeignKey("training_logs.id"), nullable=False, unique=True), sa.Column("confidence", sa.Integer(), nullable=False, server_default="3"), sa.Column("reflection", sa.Text(), nullable=False, server_default=""))
 
-    op.create_table("coach_action_logs", sa.Column("id", sa.Integer(), primary_key=True), sa.Column("coach_user_id", sa.Integer(), sa.ForeignKey("users.id"), nullable=False), sa.Column("athlete_id", sa.Integer(), sa.ForeignKey("athletes.id"), nullable=False), sa.Column("action", sa.String(length=80), nullable=False), sa.Column("payload", sa.JSON(), nullable=False, server_default="{}"), sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.text("now()")))
+    op.create_table("coach_action_logs", sa.Column("id", sa.Integer(), primary_key=True), sa.Column("coach_user_id", sa.Integer(), sa.ForeignKey("users.id"), nullable=False), sa.Column("athlete_id", sa.Integer(), sa.ForeignKey("athletes.id"), nullable=False), sa.Column("action", sa.String(length=80), nullable=False), sa.Column("payload", sa.JSON(), nullable=False, server_default="{}"), sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")))
     op.create_index("ix_coach_action_logs_athlete_id", "coach_action_logs", ["athlete_id"])
 
     op.create_table("coach_notes_tasks", sa.Column("id", sa.Integer(), primary_key=True), sa.Column("athlete_id", sa.Integer(), sa.ForeignKey("athletes.id"), nullable=False), sa.Column("note", sa.Text(), nullable=False), sa.Column("due_date", sa.Date(), nullable=True), sa.Column("completed", sa.Boolean(), nullable=False, server_default=sa.text("false")))
@@ -151,10 +151,10 @@ def upgrade() -> None:
 
     op.create_table("athlete_preferences", sa.Column("id", sa.Integer(), primary_key=True), sa.Column("athlete_id", sa.Integer(), sa.ForeignKey("athletes.id"), nullable=False, unique=True), sa.Column("reminder_enabled", sa.Boolean(), nullable=False, server_default=sa.text("true")), sa.Column("reminder_training_days", sa.JSON(), nullable=False, server_default="[]"), sa.Column("privacy_ack", sa.Boolean(), nullable=False, server_default=sa.text("false")), sa.Column("automation_mode", sa.String(length=20), nullable=False, server_default="manual"), sa.Column("auto_apply_low_risk", sa.Boolean(), nullable=False, server_default=sa.text("false")), sa.Column("auto_apply_confidence_min", sa.Float(), nullable=False, server_default="0.8"), sa.Column("auto_apply_risk_max", sa.Float(), nullable=False, server_default="0.3"))
 
-    op.create_table("app_write_logs", sa.Column("id", sa.Integer(), primary_key=True), sa.Column("scope", sa.String(length=80), nullable=False), sa.Column("actor_user_id", sa.Integer(), sa.ForeignKey("users.id"), nullable=True), sa.Column("payload", sa.JSON(), nullable=False, server_default="{}"), sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.text("now()")))
-    op.create_table("app_runtime_errors", sa.Column("id", sa.Integer(), primary_key=True), sa.Column("page", sa.String(length=80), nullable=False), sa.Column("error_message", sa.Text(), nullable=False), sa.Column("traceback", sa.Text(), nullable=False), sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.text("now()")))
+    op.create_table("app_write_logs", sa.Column("id", sa.Integer(), primary_key=True), sa.Column("scope", sa.String(length=80), nullable=False), sa.Column("actor_user_id", sa.Integer(), sa.ForeignKey("users.id"), nullable=True), sa.Column("payload", sa.JSON(), nullable=False, server_default="{}"), sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")))
+    op.create_table("app_runtime_errors", sa.Column("id", sa.Integer(), primary_key=True), sa.Column("page", sa.String(length=80), nullable=False), sa.Column("error_message", sa.Text(), nullable=False), sa.Column("traceback", sa.Text(), nullable=False), sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")))
 
-    op.create_table("import_runs", sa.Column("id", sa.Integer(), primary_key=True), sa.Column("adapter_name", sa.String(length=80), nullable=False), sa.Column("status", sa.String(length=20), nullable=False, server_default="started"), sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.text("now()")))
+    op.create_table("import_runs", sa.Column("id", sa.Integer(), primary_key=True), sa.Column("adapter_name", sa.String(length=80), nullable=False), sa.Column("status", sa.String(length=20), nullable=False, server_default="started"), sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")))
     op.create_table("import_items", sa.Column("id", sa.Integer(), primary_key=True), sa.Column("import_run_id", sa.Integer(), sa.ForeignKey("import_runs.id"), nullable=False), sa.Column("athlete_id", sa.Integer(), sa.ForeignKey("athletes.id"), nullable=True), sa.Column("raw_payload", sa.JSON(), nullable=False, server_default="{}"), sa.Column("status", sa.String(length=20), nullable=False, server_default="pending"), sa.Column("message", sa.String(length=255), nullable=False, server_default=""))
     op.create_index("ix_import_items_import_run_id", "import_items", ["import_run_id"])
 

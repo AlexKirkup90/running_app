@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from core.config import get_settings
+
 
 def readiness_score(sleep: int, energy: int, recovery: int, stress: int) -> float:
     # stress inverted
@@ -7,8 +9,9 @@ def readiness_score(sleep: int, energy: int, recovery: int, stress: int) -> floa
 
 
 def readiness_band(score: float) -> str:
-    if score >= 4:
+    settings = get_settings()
+    if score >= settings.readiness_green_min:
         return "green"
-    if score >= 3:
+    if score >= settings.readiness_amber_min:
         return "amber"
     return "red"

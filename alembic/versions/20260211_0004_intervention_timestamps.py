@@ -18,7 +18,7 @@ depends_on = None
 def upgrade() -> None:
     op.add_column(
         "coach_interventions",
-        sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.text("now()")),
+        sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")),
     )
     op.create_index("ix_coach_interventions_created_at", "coach_interventions", ["created_at"])
 
@@ -26,4 +26,3 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_index("ix_coach_interventions_created_at", table_name="coach_interventions")
     op.drop_column("coach_interventions", "created_at")
-

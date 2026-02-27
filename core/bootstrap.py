@@ -59,6 +59,22 @@ def _reconcile_demo_credentials() -> None:
             coach.failed_attempts = 0
             coach.locked_until = None
 
+        master = s.execute(select(User).where(User.username == "master")).scalar_one_or_none()
+        if master is None:
+            master = User(
+                username="master",
+                role="admin",
+                password_hash=hash_password("MasterPass!234"),
+                must_change_password=False,
+            )
+            s.add(master)
+        else:
+            master.role = "admin"
+            master.password_hash = hash_password("MasterPass!234")
+            master.must_change_password = False
+            master.failed_attempts = 0
+            master.locked_until = None
+
         athlete = s.execute(select(Athlete).where(Athlete.email == "athlete1@demo.run")).scalar_one_or_none()
         if athlete is None:
             athlete = Athlete(first_name="Demo1", last_name="Runner", email="athlete1@demo.run", dob=date(1990, 1, 1))

@@ -40,3 +40,37 @@ def test_validate_session_payload_invalid_rpe_range_fails():
     payload["targets_json"]["primary"]["rpe_range"] = [8, 4]
     errors = validate_session_payload(payload)
     assert any("rpe_range" in e for e in errors)
+
+
+def test_validate_session_payload_daniels_methodology_requires_main_set_intensity_code():
+    payload = _valid_payload()
+    payload["intent"] = "threshold"
+    payload["energy_system"] = "lactate_threshold"
+    payload["targets_json"] = deepcopy(payload["targets_json"])
+    payload["targets_json"]["methodology"] = "daniels_vdot"
+    payload["targets_json"]["primary"]["intensity_code"] = "T"
+    errors = validate_session_payload(payload)
+    assert any("main_set" in e and "intensity_code" in e for e in errors)
+
+
+def test_validate_session_payload_daniels_methodology_valid_when_coded():
+    payload = _valid_payload()
+    payload["intent"] = "threshold"
+    payload["energy_system"] = "lactate_threshold"
+    payload["structure_json"] = deepcopy(payload["structure_json"])
+    payload["structure_json"]["methodology"] = "daniels_vdot"
+    for block in payload["structure_json"]["blocks"]:
+        target = dict(block["target"])
+        if block["phase"] == "main_set":
+            target["intensity_code"] = "T"
+        else:
+            target["intensity_code"] = "E"
+        block["target"] = target
+    payload["targets_json"] = deepcopy(payload["targets_json"])
+    payload["targets_json"]["methodology"] = "daniels_vdot"
+    payload["targets_json"]["primary"]["pace_zone"] = "Z4"
+    payload["targets_json"]["primary"]["hr_zone"] = "Z3-Z4"
+    payload["targets_json"]["primary"]["rpe_range"] = [6, 7]
+    payload["targets_json"]["primary"]["intensity_code"] = "T"
+    errors = validate_session_payload(payload)
+    assert errors == []
